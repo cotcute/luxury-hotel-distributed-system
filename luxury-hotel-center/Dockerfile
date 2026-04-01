@@ -23,7 +23,7 @@ RUN echo 'echo "DB_PORT=${DB_PORT}" >> .env' >> start.sh
 RUN echo 'echo "DB_DATABASE=${DB_DATABASE}" >> .env' >> start.sh
 RUN echo 'echo "DB_USERNAME=${DB_USERNAME}" >> .env' >> start.sh
 RUN echo 'echo "DB_PASSWORD=${DB_PASSWORD}" >> .env' >> start.sh
-RUN echo 'php artisan migrate --force' >> start.sh
+
 RUN echo 'php artisan serve --host=0.0.0.0 --port=80' >> start.sh
 RUN chmod +x start.sh
 # --------------------------------------
