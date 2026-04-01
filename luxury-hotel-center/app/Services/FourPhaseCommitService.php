@@ -99,14 +99,12 @@ class FourPhaseCommitService
     }
 
     // =========================================================================
-    // VŨ KHÍ TỐI THƯỢNG MỚI: CƠ CHẾ QUORUM (Tolerate 1 Dead Node)
+    // VŨ KHÍ TỐI THƯỢNG: CƠ CHẾ EVENTUAL CONSISTENCY (YÊU CẦU CỦA THẦY)
     // =========================================================================
     private function sendQuorumRequests($endpoint, $payload, $expectedStatus): bool
     {
-        // Gửi lệnh song song cho cả 5 máy cùng lúc
         $responses = Http::pool(function (Pool $pool) use ($endpoint, $payload) {
             foreach ($this->nodes as $nodeUrl) {
-                // Chờ tối đa 5 giây. Nếu thằng nào tắt máy, mặc kệ nó cho chết luôn.
                 $pool->as($nodeUrl)->withOptions(['verify' => false])->connectTimeout(3)->timeout(5)->post($nodeUrl . $endpoint, $payload);
             }
         });
@@ -115,40 +113,42 @@ class FourPhaseCommitService
         $roomHijackedError = null; 
 
         foreach ($responses as $nodeUrl => $response) {
-            // Nếu thằng nào quăng lỗi mạng (tắt máy), ta cứ lờ đi (kệ nó)
             if ($response instanceof \Exception || !$response->ok()) {
                 continue; 
             }
             
             $status = $response->json('status');
             
-            // ƯU TIÊN 1: Lỗi Cướp Phòng (Logic nghiệp vụ) -> Phải bắt liền!
+            // ƯU TIÊN 1: Lỗi Cướp Phòng (Logic nghiệp vụ) -> Vẫn phải bắt liền để chống trùng lặp!
             if (strpos($endpoint, 'can-commit') !== false && $status === 'NO') {
                 $roomHijackedError = "CƯỚP PHÒNG|Phòng số {$payload['room_id']} vừa bị khách khác khóa trước!";
                 continue; 
             }
 
-            // Nếu nó phản hồi đúng (YES / ACK / SUCCESS) thì cộng 1 điểm
             if ($status === $expectedStatus) {
                 $successCount++;
             }
         }
 
-        // TÒA TUYÊN ÁN:
-        // 1. Nếu có thằng báo bị cướp phòng -> Hủy toàn bộ (Bảo vệ dữ liệu)
         if ($roomHijackedError) {
             throw new \Exception($roomHijackedError);
         }
 
-        // 2. CƠ CHẾ KHOAN DUNG LỖI (FAULT TOLERANCE)
-        // Hệ thống có 5 máy. Ta cho phép chết 1 máy. Vậy cần tối thiểu 4 máy báo Thành công.
-        $minimumRequired = count($this->nodes) - 1; 
+        // --- SỬA LOGIC THEO Ý THẦY Ở ĐÂY ---
+        // Hệ thống có 5 máy. Chỉ cần ÍT NHẤT 1 máy phản hồi (chính là máy Đầu não) thì vẫn cho qua!
+        $minimumRequired = 1; 
 
         if ($successCount >= $minimumRequired) {
-            return true; // Dù 1 thằng có tắt, 4 thằng OK thì ta VẪN DUYỆT!
+            // Tính số máy chết để báo ra màn hình xanh
+            $deadNodes = count($this->nodes) - $successCount;
+            if ($deadNodes > 0) {
+                // Ném một tín hiệu vào Session để Controller bắt được
+                session()->flash('sync_warning', "Đặt phòng thành công! (Có $deadNodes/5 Server đang tắt, hệ thống sẽ tự động đồng bộ bù sau theo Eventual Consistency).");
+            }
+            return true; 
         }
 
-        // 3. Nếu số máy sống < 4 (VD: chết 2 máy trở lên) -> Văng lỗi sập hệ thống
-        throw new \Exception("Lỗi Mạng: Hệ thống cần ít nhất $minimumRequired máy hoạt động, nhưng hiện tại chỉ có $successCount máy phản hồi!");
+        // Nếu sập cả 5 máy thì mới văng lỗi
+        throw new \Exception("Lỗi Mạng Nghiêm Trọng: Sập toàn bộ hệ thống! Không có máy nào phản hồi.");
     }
 }
