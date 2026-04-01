@@ -14,6 +14,9 @@ class FourPhaseCommitService
     {
         // ĐIỀN ĐÚNG 5 LINK RENDER CỦA KHÁNH, KHẢI, NGỌC, KIÊN, DUY VÀO ĐÂY
         $this->nodes = [
+            'https://node-1-khanh.onrender.com',
+            'https://node-2-khai.onrender.com',
+            'https://node-3-khaiii.onrender.com', 
             'https://luxury-hotel-distributed-system-49mq.onrender.com', // Máy của bạn (Đầu não)
     'https://node-3-ngocc.onrender.com' // Máy của Ngọc
         ];
