@@ -47,7 +47,7 @@ class FourPhaseCommitService
             }
 
             $pointOfNoReturn = true;
-            sleep(10); 
+            sleep(5); 
 
             // PHA 3: CHỐT HẠ
             $this->phase3DoCommit($transactionId);
