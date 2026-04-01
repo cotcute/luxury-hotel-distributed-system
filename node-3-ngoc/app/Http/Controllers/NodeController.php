@@ -15,9 +15,11 @@ class NodeController extends Controller
         $nodePort = $request->server('SERVER_PORT'); 
         
         // KHÓA CỔNG: Nếu ID phòng này đang bị pending hoặc committed bởi NGƯỜI KHÁC -> TỪ CHỐI
+        // FIX LỖI CHÍ MẠNG: Phải dùng 'transaction_id' thay vì 'id', và loại trừ chính cái giao dịch này ra!
         $isRoomLocked = DB::table('node_bookings')
             ->where('node_port', $nodePort)
             ->where('room_id', $roomId)
+            ->where('transaction_id', '!=', $transactionId) // <-- VŨ KHÍ BÍ MẬT Ở ĐÂY
             ->whereIn('status', ['pending', 'committed'])
             ->exists();
         
@@ -70,8 +72,6 @@ class NodeController extends Controller
         return response()->json(['status' => 'FAILED']);
     }
 
-    // PHA 4: Hủy bỏ
-    // PHA 4: Hủy bỏ
     // PHA 4: Hủy bỏ
     public function abort(Request $request)
     {
