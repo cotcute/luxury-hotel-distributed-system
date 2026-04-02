@@ -14,11 +14,11 @@ class FourPhaseCommitService
     {
         // ĐIỀN ĐÚNG 5 LINK RENDER CỦA KHÁNH, KHẢI, NGỌC, KIÊN, DUY VÀO ĐÂY
         $this->nodes = [
-            'https://node-1-khanh.onrender.com',
-            'https://node-2-khai.onrender.com',
-            'https://node-3-khaiii.onrender.com', 
-            'https://luxury-hotel-distributed-system-49mq.onrender.com', // Máy của bạn (Đầu não)
-    'https://node-3-ngocc.onrender.com' // Máy của Ngọc
+           'https://luxury-hotel-distributed-system-49mq.onrender.com', // Máy Đầu não (Khánh)
+            'https://node-3-ngocc.onrender.com', // Máy Ngọc
+            'https://node-2-khai-80yz.onrender.com', // Máy Khải
+            'https://node-kien.onrender.com', // Máy Kiên
+            'https://node-5-duy-b0ca.onrender.com' // Máy Duy
         ];
     }
 
