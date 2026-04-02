@@ -5,7 +5,6 @@ use Illuminate\Support\Facades\Route;
 
 // Import đầy đủ Controller
 use App\Http\Controllers\HomeController;
-
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\AdminController;
@@ -34,7 +33,7 @@ Route::prefix('booking')->group(function () {
     Route::get('/create', [BookingController::class, 'create'])
         ->name('booking.create');
 
-    // Route nhận dữ liệu lưu booking (SỬA CHUẨN THEO YÊU CẦU)
+    // Lưu booking
     Route::post('/store', [BookingController::class, 'store'])
         ->name('booking.store');
 
@@ -65,7 +64,7 @@ Route::middleware('auth')->group(function () {
     // Đăng xuất
     Route::post('/logout', [AuthController::class, 'logout'])->name('logout');
 
-    // Dashboard chung cho user
+    // Dashboard user
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
 
@@ -90,5 +89,11 @@ Route::middleware('auth')->group(function () {
         // QUẢN LÝ TIN NHẮN
         Route::get('/messages', [AdminController::class, 'messages'])
             ->name('admin.messages');
+
+        // -------------------------------------------------
+        // 🚀 SYNC THỦ CÔNG TỪ ADMIN (4PC)
+        // -------------------------------------------------
+        Route::post('/sync', [AdminController::class, 'syncToNodes'])
+            ->name('admin.sync');
     });
 });

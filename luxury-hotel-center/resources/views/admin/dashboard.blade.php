@@ -3,6 +3,32 @@
 @section('content')
 <h2 class="mb-4 text-gray-800">Tổng Quan Quản Trị</h2>
 
+{{-- 🚀 EVENTUAL CONSISTENCY BUTTON --}}
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card bg-light border-warning shadow-sm">
+            <div class="card-body d-flex align-items-center justify-content-between">
+                <div>
+                    <h5 class="card-title text-warning mb-1">
+                        <i class="fas fa-exclamation-triangle"></i> Eventual Consistency (Đồng bộ bù)
+                    </h5>
+                    <p class="card-text text-muted mb-0">
+                        Hệ thống phát hiện có Server bị tắt lúc khách hàng đặt phòng?
+                        Bấm nút này để ép đồng bộ lại dữ liệu cho các Server đó.
+                    </p>
+                </div>
+                <form action="{{ route('admin.sync') }}" method="POST" class="m-0">
+                    @csrf
+                    <button type="submit" class="btn btn-warning btn-lg shadow"
+                        style="font-weight: bold; border-radius: 8px;">
+                        <i class="fas fa-sync-alt fa-spin-hover"></i> Bắn Dữ Liệu Bù Lên 5 Server
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
 {{-- 1. THẺ THỐNG KÊ (STATS CARDS) --}}
 <div class="row g-4 mb-4">
     <div class="col-md-3">
@@ -36,11 +62,12 @@
 </div>
 
 <div class="row g-4 mb-4">
-    {{-- 2. TÌNH TRẠNG KHO PHÒNG (MỚI THÊM) --}}
+    {{-- 2. TÌNH TRẠNG KHO PHÒNG --}}
     <div class="col-lg-5">
         <div class="card shadow-sm h-100">
             <div class="card-header bg-white py-3 border-bottom">
-                <h6 class="m-0 font-weight-bold text-dark"><i class="fa-solid fa-bed me-2"></i> Tình Trạng Kho Phòng
+                <h6 class="m-0 font-weight-bold text-dark">
+                    <i class="fa-solid fa-bed me-2"></i> Tình Trạng Kho Phòng
                 </h6>
             </div>
             <div class="card-body">
@@ -53,7 +80,8 @@
                         </small>
                     </div>
                     <div class="progress" style="height: 8px;">
-                        <div class="progress-bar {{ $room['percent'] >= 100 ? 'bg-danger' : ($room['percent'] > 50 ? 'bg-warning' : 'bg-success') }}"
+                        <div class="progress-bar 
+                            {{ $room['percent'] >= 100 ? 'bg-danger' : ($room['percent'] > 50 ? 'bg-warning' : 'bg-success') }}"
                             role="progressbar" style="width: {{ $room['percent'] }}%">
                         </div>
                     </div>
@@ -67,7 +95,9 @@
     <div class="col-lg-7">
         <div class="card shadow-sm h-100">
             <div class="card-header bg-white py-3 border-bottom">
-                <h6 class="m-0 font-weight-bold text-dark"><i class="fa-solid fa-clock me-2"></i> Đơn Đặt Gần Đây</h6>
+                <h6 class="m-0 font-weight-bold text-dark">
+                    <i class="fa-solid fa-clock me-2"></i> Đơn Đặt Gần Đây
+                </h6>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -87,7 +117,8 @@
                                     <span class="fw-bold text-dark d-block">{{ $booking->name }}</span>
                                     <small class="text-muted">{{ $booking->phone }}</small>
                                 </td>
-                                <td>{{ Str::limit(str_replace('Phòng: ', '', explode('|', $booking->note)[0]), 15) }}
+                                <td>
+                                    {{ Str::limit(str_replace('Phòng: ', '', explode('|', $booking->note)[0]), 15) }}
                                 </td>
                                 <td class="fw-bold text-danger">{{ number_format($booking->total_price) }} ₫</td>
                                 <td>
@@ -106,8 +137,9 @@
                 </div>
             </div>
             <div class="card-footer bg-white text-center">
-                <a href="{{ route('admin.bookings') }}" class="text-decoration-none small fw-bold">Xem tất cả đơn <i
-                        class="fa-solid fa-arrow-right ms-1"></i></a>
+                <a href="{{ route('admin.bookings') }}" class="text-decoration-none small fw-bold">
+                    Xem tất cả đơn <i class="fa-solid fa-arrow-right ms-1"></i>
+                </a>
             </div>
         </div>
     </div>

@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\Booking;
 use App\Models\Contact;
 use App\Models\User;
+use Illuminate\Support\Facades\Http; // <-- Thư viện mới thêm
 
 class AdminController extends Controller
 {
@@ -32,9 +33,6 @@ class AdminController extends Controller
         foreach ($roomInstances as $roomName => $ids) {
             $total = count($ids);
             
-            // QUAN TRỌNG: Đếm cả 'pending', 'confirmed' VÀ 'checked_in'
-            // Tìm chính xác theo Mảng ID Phòng (Ví dụ: [301, 302, 303, 304])
-            // Lọc ra các phòng đang bị khóa bởi 4 Pha hoặc đã được đặt
             $booked = Booking::whereIn('room_id', $ids)
                              ->whereIn('status', ['pending', 'confirmed', 'checked_in']) 
                              ->count();
@@ -68,11 +66,9 @@ class AdminController extends Controller
     {
         $booking = Booking::findOrFail($id);
         
-        // Nhận trạng thái từ form (confirmed, checked_in, checked_out, cancelled)
         $booking->status = $request->status; 
         $booking->save();
 
-        // Thông báo tùy theo hành động
         $msg = 'Cập nhật thành công!';
         if ($request->status == 'checked_out') {
             $msg = 'Đã trả phòng thành công! Phòng đã trống cho khách mới.';
@@ -88,5 +84,55 @@ class AdminController extends Controller
     {
         $messages = Contact::orderBy('created_at', 'desc')->paginate(10);
         return view('admin.messages.index', compact('messages'));
+    }
+
+    // =========================================================
+    // NÚT BẤM THẦN THÁNH: ĐỒNG BỘ BÙ CHO CÁC MÁY BỊ TẮT
+    // =========================================================
+    public function syncToNodes()
+    {
+        $nodes = [
+            'https://luxury-hotel-distributed-system-49mq.onrender.com', // Đầu não
+            'https://node-3-ngocc.onrender.com', // Ngọc
+            'https://node-2-khai-80yz.onrender.com', // Khải
+            'https://node-kien.onrender.com', // Kiên
+            'https://node-5-duy-b0ca.onrender.com' // Duy
+        ];
+
+        // 1. Gom tất cả đơn hàng ĐÃ THÀNH CÔNG trên Đầu não
+        $bookings = Booking::whereIn('status', ['confirmed', 'checked_in', 'checked_out'])->get();
+
+        if ($bookings->isEmpty()) {
+            return redirect()->back()->with('success', 'Không có dữ liệu đơn hàng nào cần đồng bộ.');
+        }
+
+        // 2. Gói hàng lại
+        $syncData = $bookings->map(function ($booking) {
+            return [
+                'transaction_id' => $booking->id,
+                'room_id' => $booking->room_id,
+                'customer_name' => $booking->name,
+                'status' => 'committed', 
+            ];
+        })->toArray();
+
+        // 3. Quét qua 5 máy và Bắn dữ liệu bù
+        $successCount = 0;
+        foreach ($nodes as $nodeUrl) {
+            try {
+                // Gửi nguyên cục dữ liệu sang cổng /api/sync của các máy
+                $response = Http::withoutVerifying()->timeout(5)->post($nodeUrl . '/api/sync', [
+                    'bookings' => $syncData
+                ]);
+                
+                if ($response->ok()) {
+                    $successCount++;
+                }
+            } catch (\Exception $e) {
+                // Máy nào vẫn đang tắt thì bỏ qua, chờ lần bấm sau
+            }
+        }
+
+        return redirect()->back()->with('success', "🚀 Đã rà soát và đồng bộ dữ liệu bù thành công lên $successCount/5 Server!");
     }
 }
