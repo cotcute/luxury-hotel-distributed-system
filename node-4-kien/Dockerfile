@@ -8,7 +8,7 @@ RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local
 WORKDIR /app
 COPY . /app
 
-RUN composer install --no-audit
+RUN composer install --no-dev --optimize-autoloader
 
 # --- ĐÂY LÀ ĐOẠN MA THUẬT QUYẾT ĐỊNH ---
 # Chúng ta sẽ viết 1 script nhỏ để tự động tạo file .env TỪ CHÍNH NHỮNG GÌ BẠN NHẬP TRÊN RENDER
