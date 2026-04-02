@@ -4,59 +4,61 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Http\Client\Pool;
-use Illuminate\Support\Facades\Log;
 
 class FourPhaseCommitService
 {
     protected $nodes;
-    protected $deadNodesList = []; // Cuốn sổ ghi nợ các máy bị tắt
 
     public function __construct()
     {
         $this->nodes = [
             'https://luxury-hotel-distributed-system-49mq.onrender.com', // Đầu não
-            'https://node-3-ngocc.onrender.com', // Ngọc
-            'https://node-2-khai-80yz.onrender.com', // Khải
-            'https://node-kien.onrender.com', // Kiên
-            'https://node-5-duy-b0ca.onrender.com' // Duy
+            'https://node-3-ngocc.onrender.com',
+            'https://node-2-khai-80yz.onrender.com',
+            'https://node-kien.onrender.com',
+            'https://node-5-duy-b0ca.onrender.com'
         ];
     }
 
-    public function getDeadNodes()
+    public function executeTransaction(array $bookingData): array
     {
-        return array_unique($this->deadNodesList); 
-    }
-
-    public function executeTransaction(array $bookingData): bool
-    {
-        $this->deadNodesList = []; // Reset sổ nợ mỗi khi có khách mới
-
         $transactionId = $bookingData['id'];
         $roomId = $bookingData['room_id'] ?? null;
         $customerName = $bookingData['name'] ?? null;
         $pointOfNoReturn = false; 
+        
+        // VŨ KHÍ MỚI: Khai báo biến ngay trong hàm, truyền tay qua các Pha, KHÔNG BAO GIỜ bị mất dữ liệu!
+        $deadNodesList = []; 
 
         try {
-            if (!$this->phase1CanCommit($bookingData)) {
+            if (!$this->sendQuorumRequests('/api/can-commit', ['id' => $transactionId, 'room_id' => $roomId], 'YES', $deadNodesList)) {
                 $this->abortTransaction($transactionId, "TỪ CHỐI (PHA 1)", $roomId, $customerName);
                 throw new \Exception("Giao dịch bị từ chối: Không đủ Node sống hoặc bị chiếm phòng!");
             }
 
-            if (!$this->phase2PreCommit($transactionId, $roomId, $customerName)) {
+            if (!$this->sendQuorumRequests('/api/pre-commit', ['transaction_id' => $transactionId, 'room_id' => $roomId, 'customer_name' => $customerName], 'ACK', $deadNodesList)) {
                 $this->abortTransaction($transactionId, "TỪ CHỐI (PHA 2)", $roomId, $customerName);
                 throw new \Exception("Giao dịch bị từ chối: Lỗi ở Pha chuẩn bị!");
             }
 
             $pointOfNoReturn = true;
 
-            $this->phase3DoCommit($transactionId);
-            return true; 
+            $this->sendQuorumRequests('/api/do-commit', ['transaction_id' => $transactionId], 'SUCCESS', $deadNodesList);
+
+            // TRẢ VỀ TRỰC TIẾP KẾT QUẢ VÀ DANH SÁCH MÁY CHẾT
+            return [
+                'status' => 'success',
+                'dead_nodes' => array_unique($deadNodesList)
+            ];
 
         } catch (\Exception $e) {
             $errorMsg = $e->getMessage();
             
             if ($pointOfNoReturn) {
-                return true; 
+                return [
+                    'status' => 'success',
+                    'dead_nodes' => array_unique($deadNodesList)
+                ];
             }
 
             if (strpos($errorMsg, 'CƯỚP PHÒNG') !== false) {
@@ -69,32 +71,18 @@ class FourPhaseCommitService
         }
     }
 
-    private function phase1CanCommit($data): bool {
-        return $this->sendQuorumRequests('/api/can-commit', ['id' => $data['id'], 'room_id' => $data['room_id']], 'YES');
-    }
-
-    private function phase2PreCommit($transactionId, $roomId = null, $customerName = null): bool {
-        return $this->sendQuorumRequests('/api/pre-commit', ['transaction_id' => $transactionId, 'room_id' => $roomId, 'customer_name' => $customerName], 'ACK');
-    }
-
-    private function phase3DoCommit($transactionId): bool {
-        return $this->sendQuorumRequests('/api/do-commit', ['transaction_id' => $transactionId], 'SUCCESS');
-    }
-
     public function abortTransaction($transactionId, $reason = "ABORTED", $roomId = null, $customerName = null) {
         foreach ($this->nodes as $nodeUrl) {
             try {
                 Http::withoutVerifying()->timeout(3)->post($nodeUrl . '/api/abort', [
-                    'transaction_id' => $transactionId,
-                    'reason' => $reason,
-                    'room_id' => $roomId,
-                    'customer_name' => $customerName
+                    'transaction_id' => $transactionId, 'reason' => $reason, 'room_id' => $roomId, 'customer_name' => $customerName
                 ]);
             } catch (\Exception $e) {}
         }
     }
 
-    private function sendQuorumRequests($endpoint, $payload, $expectedStatus): bool
+    // GHI SỔ NỢ BẰNG THAM CHIẾU (&$deadNodesList)
+    private function sendQuorumRequests($endpoint, $payload, $expectedStatus, &$deadNodesList): bool
     {
         $nodeNames = [
             'https://luxury-hotel-distributed-system-49mq.onrender.com' => 'Máy Đầu Não',
@@ -114,9 +102,9 @@ class FourPhaseCommitService
         $roomHijackedError = null; 
 
         foreach ($responses as $nodeUrl => $response) {
-            // VŨ KHÍ TỐI THƯỢNG FIX LỖI: Bắt cả lỗi mạng VÀ lỗi Render trả về trang HTML 200 OK (lúc này json('status') sẽ bị null)
-            if ($response instanceof \Exception || !$response->ok() || $response->json('status') === null) {
-                $this->deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
+            // Đã kiểm tra cực gắt: Request chết, timeout, Render trả về HTML 502, JSON lỗi... tóm cổ hết!
+            if (!$response || $response instanceof \Exception || !$response->ok() || $response->json('status') === null) {
+                $deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
                 continue; 
             }
             
@@ -130,21 +118,12 @@ class FourPhaseCommitService
             if ($status === $expectedStatus) {
                 $successCount++;
             } else {
-                // Nếu trả về JSON nhưng không phải trạng thái thành công -> Cũng coi như máy đó bị lỗi
-                $this->deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
+                $deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
             }
         }
 
-        if ($roomHijackedError) {
-            throw new \Exception($roomHijackedError);
-        }
-
-        $minimumRequired = 1; 
-
-        if ($successCount >= $minimumRequired) {
-            return true; 
-        }
-
-        throw new \Exception("Lỗi Mạng Nghiêm Trọng: Sập toàn bộ hệ thống! Không có máy nào phản hồi.");
+        if ($roomHijackedError) { throw new \Exception($roomHijackedError); }
+        
+        return $successCount >= 1; 
     }
-}
+}   

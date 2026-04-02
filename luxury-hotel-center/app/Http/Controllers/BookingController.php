@@ -101,14 +101,14 @@ class BookingController extends Controller
             $booking->status = 'pending';
             $booking->save();
 
-            // --- KÍCH HOẠT HỆ PHÂN TÁN 4 PHA ---
-            $isSuccess = $this->fourPCService->executeTransaction($booking->toArray());
+            // --- KÍCH HOẠT HỆ PHÂN TÁN 4 PHA (BẢN CHUẨN) ---
+            $result = $this->fourPCService->executeTransaction($booking->toArray());
 
-            if ($isSuccess) {
+            if ($result['status'] === 'success') {
                 $booking->update(['status' => 'confirmed']);
                 
-                // ĐỌC SỔ NỢ TỪ SERVICE XEM CÓ MÁY NÀO DIE KHÔNG
-                $deadNodes = $this->fourPCService->getDeadNodes();
+                // Lấy mảng máy chết trực tiếp từ kết quả trả về
+                $deadNodes = $result['dead_nodes'] ?? [];
 
                 if (count($deadNodes) > 0) {
                     $deadNames = implode(', ', $deadNodes);
@@ -117,7 +117,7 @@ class BookingController extends Controller
                     return redirect()->route('home')->with('success', $warningMsg);
                 } else {
                     return redirect()->route('home')->with(
-                        'success', 
+                        'success',
                         'Tuyệt vời! Đặt phòng thành công và dữ liệu đã đồng bộ mượt mà lên toàn bộ 5 Server Node.'
                     );
                 }
