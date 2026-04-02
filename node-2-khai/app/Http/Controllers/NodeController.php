@@ -11,14 +11,16 @@ class NodeController extends Controller
     public function canCommit(Request $request)
     {
         $transactionId = $request->input('id'); 
-        $roomId = $request->input('room_id'); // Lấy ID phòng từ Trung tâm
-        $nodePort = $request->server('SERVER_PORT'); 
+        $roomId = $request->input('room_id');
         
-        // KHÓA CỔNG: Nếu ID phòng này đang bị pending hoặc committed bởi NGƯỜI KHÁC -> TỪ CHỐI
+        // BÍ KÍP GIẢI QUYẾT LỖI CƯỚP PHÒNG ẢO:
+        // 1. KHÔNG check 'committed' nữa. Đầu não đã chặn trùng ngày ở cửa ngoài rồi.
+        // 2. Chống kẹt rác: Chỉ block những giao dịch 'pending' mới tạo trong 2 PHÚT gần nhất!
         $isRoomLocked = DB::table('node_bookings')
-            ->where('node_port', $nodePort)
             ->where('room_id', $roomId)
-            ->whereIn('status', ['pending', 'committed'])
+            ->where('transaction_id', '!=', $transactionId)
+            ->where('status', 'pending')
+            ->where('created_at', '>=', now()->subMinutes(2)) 
             ->exists();
         
         if ($isRoomLocked) {
@@ -28,13 +30,15 @@ class NodeController extends Controller
         return response()->json(['status' => 'YES']);
     }
 
-    // PHA 2: Chuẩn bị (Lưu Tên và ID phòng)
+    // PHA 2: Chuẩn bị 
     public function preCommit(Request $request)
     {
         $transactionId = $request->input('transaction_id');
         $roomId = $request->input('room_id');
         $customerName = $request->input('customer_name');
-        $nodePort = $request->server('SERVER_PORT'); 
+        
+        // Render hay sinh ra port ảo, bỏ qua luôn, dùng transaction_id làm khóa chính là đủ!
+        $nodePort = $request->server('SERVER_PORT') ?? 80; 
 
         try {
             DB::table('node_bookings')->insert([
@@ -56,11 +60,10 @@ class NodeController extends Controller
     public function doCommit(Request $request)
     {
         $transactionId = $request->input('transaction_id');
-        $nodePort = $request->server('SERVER_PORT'); 
 
+        // Bỏ kiểm tra node_port để tránh Render đổi cổng gây mất kết nối
         $updated = DB::table('node_bookings')
             ->where('transaction_id', $transactionId)
-            ->where('node_port', $nodePort) 
             ->where('status', 'pending')
             ->update(['status' => 'committed', 'updated_at' => now()]);
 
@@ -71,30 +74,23 @@ class NodeController extends Controller
     }
 
     // PHA 4: Hủy bỏ
-    // PHA 4: Hủy bỏ
-    // PHA 4: Hủy bỏ
     public function abort(Request $request)
     {
         $transactionId = $request->input('transaction_id');
-        $nodePort = $request->server('SERVER_PORT'); 
         $reason = $request->input('reason', 'ABORTED');
         $roomId = $request->input('room_id');
         $customerName = $request->input('customer_name');
+        $nodePort = $request->server('SERVER_PORT') ?? 80; 
 
-        // BẮT BỆNH: Kiểm tra xem giao dịch đã tồn tại trong Node chưa
         $exists = DB::table('node_bookings')
             ->where('transaction_id', $transactionId)
-            ->where('node_port', $nodePort)
             ->exists();
 
         if ($exists) {
-            // Nếu đã tồn tại (Chết ở Pha 2 hoặc 3), thì chỉ Cập nhật
             DB::table('node_bookings')
                 ->where('transaction_id', $transactionId)
-                ->where('node_port', $nodePort)
                 ->update(['status' => $reason, 'updated_at' => now()]);
         } else {
-            // Nếu CHƯA tồn tại (Chết ngay Pha 1), thì INSERT MỚI luôn để vẽ lên màn hình
             DB::table('node_bookings')->insert([
                 'transaction_id' => $transactionId,
                 'node_port'      => $nodePort,
