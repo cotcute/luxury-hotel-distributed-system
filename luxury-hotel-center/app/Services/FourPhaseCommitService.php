@@ -9,33 +9,39 @@ use Illuminate\Support\Facades\Log;
 class FourPhaseCommitService
 {
     protected $nodes;
+    protected $deadNodesList = []; // Cuốn sổ ghi nợ các máy bị tắt
 
     public function __construct()
     {
         $this->nodes = [
-            'https://luxury-hotel-distributed-system-49mq.onrender.com', // Máy Khánh
-            'https://node-3-ngocc.onrender.com', // Máy Ngọc
-            'https://node-2-khai-80yz.onrender.com', // Máy Khải
-            'https://node-kien.onrender.com', // Máy Kiên
-            'https://node-5-duy-b0ca.onrender.com' // Máy Duy
+            'https://luxury-hotel-distributed-system-49mq.onrender.com', // Đầu não
+            'https://node-3-ngocc.onrender.com', // Ngọc
+            'https://node-2-khai-80yz.onrender.com', // Khải
+            'https://node-kien.onrender.com', // Kiên
+            'https://node-5-duy-b0ca.onrender.com' // Duy
         ];
+    }
+
+    public function getDeadNodes()
+    {
+        return array_unique($this->deadNodesList); 
     }
 
     public function executeTransaction(array $bookingData): bool
     {
+        $this->deadNodesList = []; // Reset sổ nợ mỗi khi có khách mới
+
         $transactionId = $bookingData['id'];
         $roomId = $bookingData['room_id'] ?? null;
         $customerName = $bookingData['name'] ?? null;
         $pointOfNoReturn = false; 
 
         try {
-            // PHA 1: HỎI Ý KIẾN
             if (!$this->phase1CanCommit($bookingData)) {
                 $this->abortTransaction($transactionId, "TỪ CHỐI (PHA 1)", $roomId, $customerName);
                 throw new \Exception("Giao dịch bị từ chối: Không đủ Node sống hoặc bị chiếm phòng!");
             }
 
-            // PHA 2: CHUẨN BỊ
             if (!$this->phase2PreCommit($transactionId, $roomId, $customerName)) {
                 $this->abortTransaction($transactionId, "TỪ CHỐI (PHA 2)", $roomId, $customerName);
                 throw new \Exception("Giao dịch bị từ chối: Lỗi ở Pha chuẩn bị!");
@@ -43,7 +49,6 @@ class FourPhaseCommitService
 
             $pointOfNoReturn = true;
 
-            // PHA 3: CHỐT HẠ
             $this->phase3DoCommit($transactionId);
             return true; 
 
@@ -89,14 +94,10 @@ class FourPhaseCommitService
         }
     }
 
-    // =========================================================================
-    // VŨ KHÍ: ĐIỂM DANH MÁY CHẾT (EVENTUAL CONSISTENCY)
-    // =========================================================================
     private function sendQuorumRequests($endpoint, $payload, $expectedStatus): bool
     {
-        // Danh bạ để điểm danh
         $nodeNames = [
-            'https://luxury-hotel-distributed-system-49mq.onrender.com' => 'Máy Đầu Não (Khánh)',
+            'https://luxury-hotel-distributed-system-49mq.onrender.com' => 'Máy Đầu Não',
             'https://node-3-ngocc.onrender.com' => 'Máy Ngọc',
             'https://node-2-khai-80yz.onrender.com' => 'Máy Khải',
             'https://node-kien.onrender.com' => 'Máy Kiên',
@@ -110,13 +111,12 @@ class FourPhaseCommitService
         });
 
         $successCount = 0;
-        $deadNodesList = []; // Mảng chứa tên các máy bị tắt
         $roomHijackedError = null; 
 
         foreach ($responses as $nodeUrl => $response) {
-            // NẾU MÁY BỊ TẮT HOẶC MẤT MẠNG -> GHI TÊN VÀO SỔ ĐEN
-            if ($response instanceof \Exception || !$response->ok()) {
-                $deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
+            // VŨ KHÍ TỐI THƯỢNG FIX LỖI: Bắt cả lỗi mạng VÀ lỗi Render trả về trang HTML 200 OK (lúc này json('status') sẽ bị null)
+            if ($response instanceof \Exception || !$response->ok() || $response->json('status') === null) {
+                $this->deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
                 continue; 
             }
             
@@ -129,6 +129,9 @@ class FourPhaseCommitService
 
             if ($status === $expectedStatus) {
                 $successCount++;
+            } else {
+                // Nếu trả về JSON nhưng không phải trạng thái thành công -> Cũng coi như máy đó bị lỗi
+                $this->deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
             }
         }
 
@@ -136,15 +139,9 @@ class FourPhaseCommitService
             throw new \Exception($roomHijackedError);
         }
 
-        // CẦN ÍT NHẤT 1 MÁY SỐNG ĐỂ CHO PHÉP ĐẶT PHÒNG
         $minimumRequired = 1; 
 
         if ($successCount >= $minimumRequired) {
-            // Nếu có máy chết, gom tên lại và quăng ra màn hình
-            if (count($deadNodesList) > 0) {
-                $deadNames = implode(', ', $deadNodesList);
-                session()->flash('sync_warning', "Đặt phòng thành công trên các Server đang Online! Tuy nhiên, [ $deadNames ] đang bị tắt hoặc mất mạng. Hệ thống sẽ đồng bộ bù sau.");
-            }
             return true; 
         }
 

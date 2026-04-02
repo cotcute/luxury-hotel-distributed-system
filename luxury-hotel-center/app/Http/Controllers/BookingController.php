@@ -107,12 +107,15 @@ class BookingController extends Controller
             if ($isSuccess) {
                 $booking->update(['status' => 'confirmed']);
                 
-                // KIỂM TRA XEM CÓ LỜI CẢNH BÁO MÁY CHẾT TỪ SERVICE KHÔNG
-                if (session()->has('sync_warning')) {
-                    // Có server chết
-                    return redirect()->route('home')->with('success', session('sync_warning'));
+                // ĐỌC SỔ NỢ TỪ SERVICE XEM CÓ MÁY NÀO DIE KHÔNG
+                $deadNodes = $this->fourPCService->getDeadNodes();
+
+                if (count($deadNodes) > 0) {
+                    $deadNames = implode(', ', $deadNodes);
+                    $warningMsg = "Đặt phòng thành công! Tuy nhiên, [ $deadNames ] đang bị tắt hoặc mất kết nối. Hệ thống sẽ đồng bộ bù sau.";
+                    
+                    return redirect()->route('home')->with('success', $warningMsg);
                 } else {
-                    // Tất cả server OK
                     return redirect()->route('home')->with(
                         'success', 
                         'Tuyệt vời! Đặt phòng thành công và dữ liệu đã đồng bộ mượt mà lên toàn bộ 5 Server Node.'
