@@ -13,9 +13,7 @@ class NodeController extends Controller
         $transactionId = $request->input('id'); 
         $roomId = $request->input('room_id');
         
-        // BÍ KÍP GIẢI QUYẾT LỖI CƯỚP PHÒNG ẢO:
-        // 1. KHÔNG check 'committed' nữa. Đầu não đã chặn trùng ngày ở cửa ngoài rồi.
-        // 2. Chống kẹt rác: Chỉ block những giao dịch 'pending' mới tạo trong 2 PHÚT gần nhất!
+        // Chống kẹt rác: Chỉ block những giao dịch 'pending' mới tạo trong 2 PHÚT gần nhất!
         $isRoomLocked = DB::table('node_bookings')
             ->where('room_id', $roomId)
             ->where('transaction_id', '!=', $transactionId)
@@ -37,7 +35,6 @@ class NodeController extends Controller
         $roomId = $request->input('room_id');
         $customerName = $request->input('customer_name');
         
-        // Render hay sinh ra port ảo, bỏ qua luôn, dùng transaction_id làm khóa chính là đủ!
         $nodePort = $request->server('SERVER_PORT') ?? 80; 
 
         try {
@@ -61,7 +58,6 @@ class NodeController extends Controller
     {
         $transactionId = $request->input('transaction_id');
 
-        // Bỏ kiểm tra node_port để tránh Render đổi cổng gây mất kết nối
         $updated = DB::table('node_bookings')
             ->where('transaction_id', $transactionId)
             ->where('status', 'pending')
@@ -100,6 +96,43 @@ class NodeController extends Controller
                 'created_at'     => now(),
                 'updated_at'     => now(),
             ]);
+        }
+
+        return response()->json(['status' => 'SUCCESS']);
+    }
+
+    // =========================================================
+    // VŨ KHÍ TỐI THƯỢNG: CỔNG NHẬN DỮ LIỆU ĐỒNG BỘ BÙ (MANUAL SYNC)
+    // =========================================================
+    public function forceSync(Request $request)
+    {
+        $bookings = $request->input('bookings', []);
+
+        foreach ($bookings as $data) {
+            $exists = DB::table('node_bookings')
+                ->where('transaction_id', $data['transaction_id'])
+                ->exists();
+
+            if ($exists) {
+                // Đã có đơn -> Cập nhật lại cho chắc chắn là 'committed'
+                DB::table('node_bookings')
+                    ->where('transaction_id', $data['transaction_id'])
+                    ->update([
+                        'status' => $data['status'],
+                        'updated_at' => now()
+                    ]);
+            } else {
+                // Chưa có (do sập nguồn) -> Chèn mới vào!
+                DB::table('node_bookings')->insert([
+                    'transaction_id' => $data['transaction_id'],
+                    'node_port'      => 80,
+                    'room_id'        => $data['room_id'],
+                    'customer_name'  => $data['customer_name'],
+                    'status'         => $data['status'],
+                    'created_at'     => now(),
+                    'updated_at'     => now(),
+                ]);
+            }
         }
 
         return response()->json(['status' => 'SUCCESS']);
