@@ -46,50 +46,72 @@
         <input type="hidden" name="night_count" id="hiddenNightCount" value="1">
 
         <div class="row">
-            {{-- Cột trái: Form nhập liệu --}}
             <div class="col-lg-8">
                 <div class="card border-0 shadow-sm p-4 mb-4">
                     <h4 class="mb-4 text-uppercase fw-bold text-dark font-playfair">1. Thông tin khách hàng</h4>
 
                     <div class="row g-3">
+
+                        {{-- CHỌN PHÒNG --}}
                         <div class="col-12 mb-3 p-3 bg-warning bg-opacity-10 border border-warning rounded">
-                            <label class="form-label fw-bold text-danger"><i class="fa-solid fa-key"></i> Chọn số phòng
-                                cụ thể (Demo 4PC) *</label>
+                            <label class="form-label fw-bold text-danger">
+                                <i class="fa-solid fa-key"></i> Chọn số phòng (Demo 4PC) *
+                            </label>
+
                             <select class="form-select border-danger shadow-sm fw-bold" name="room_id" required>
                                 <option value="">-- Click để chọn phòng còn trống --</option>
                                 @forelse($availableRooms as $rId)
                                 <option value="{{ $rId }}">Phòng số {{ $rId }}</option>
                                 @empty
-                                <option value="" disabled>Đã hết phòng loại này!</option>
+                                <option disabled>Đã hết phòng loại này!</option>
                                 @endforelse
                             </select>
-                            <small class="text-muted">Hệ thống phân tán sẽ khoá chính xác ID phòng này trên 5
-                                Server.</small>
+
+                            <small class="text-muted">
+                                Hệ thống sẽ khóa chính xác ID phòng này trên 5 Server.
+                            </small>
                         </div>
+
+                        {{-- 🔥 CHỌN SERVER (MỚI THÊM) --}}
+                        <div class="col-12 mb-3 p-3 bg-danger bg-opacity-10 border border-danger rounded">
+                            <label for="target_node" class="form-label fw-bold text-danger">
+                                <i class="fas fa-server"></i> Chọn Server Xử Lý (Demo Phân Tán) *
+                            </label>
+
+                            <select name="target_node" id="target_node"
+                                class="form-select border-danger shadow-sm fw-bold" required>
+                                <option value="">-- Click để chọn Server nhận lệnh --</option>
+                                <option value="https://node-1-khanh.onrender.com">Server Node 1 (Khánh)</option>
+                                <option value="https://node-2-khai-80yz.onrender.com">Server Node 2 (Khải)</option>
+                                <option value="https://node-3-ngocc.onrender.com">Server Node 3 (Ngọc)</option>
+                                <option value="https://node-kien.onrender.com">Server Node 4 (Kiên)</option>
+                                <option value="https://node-5-duy-b0ca.onrender.com">Server Node 5 (Duy)</option>
+                            </select>
+
+                            <small class="text-muted">
+                                Request sẽ gửi trực tiếp đến server này. Server sẽ đóng vai trò "nhạc trưởng" điều phối
+                                hệ thống.
+                            </small>
+                        </div>
+
+                        {{-- FORM THÔNG TIN --}}
                         <div class="col-md-6">
                             <label class="form-label fw-bold small">Họ tên *</label>
-                            <input type="text" name="name" class="form-control @error('name') is-invalid @enderror"
+                            <input type="text" name="name" class="form-control"
                                 value="{{ old('name', Auth::user()->name ?? '') }}" required>
-                            @error('name')
-                            <div class="invalid-feedback">{{ $message }}</div>
-                            @enderror
                         </div>
+
                         <div class="col-md-6">
                             <label class="form-label fw-bold small">Email *</label>
-                            <input type="email" name="email" class="form-control @error('email') is-invalid @enderror"
+                            <input type="email" name="email" class="form-control"
                                 value="{{ old('email', Auth::user()->email ?? '') }}" required>
-                            @error('email')
-                            <div class="invalid-feedback">{{ $message }}</div>
-                            @enderror
                         </div>
+
                         <div class="col-md-6">
-                            <label class="form-label fw-bold small">Số điện thoại *</label>
-                            <input type="tel" name="phone" class="form-control @error('phone') is-invalid @enderror"
-                                value="{{ old('phone') }}" required>
-                            @error('phone')
-                            <div class="invalid-feedback">{{ $message }}</div>
-                            @enderror
+                            <label class="form-label fw-bold small">SĐT *</label>
+                            <input type="tel" name="phone" class="form-control" value="{{ old('phone') }}" required>
                         </div>
+
                         <div class="col-md-6">
                             <label class="form-label fw-bold small">Quốc tịch</label>
                             <select class="form-select" name="country">
@@ -101,186 +123,42 @@
                         </div>
                     </div>
 
-                    <h4 class="mb-4 mt-5 text-uppercase fw-bold text-dark font-playfair">2. Chi tiết kỳ nghỉ</h4>
+                    <h4 class="mt-5 mb-3 fw-bold">2. Chi tiết kỳ nghỉ</h4>
+
                     <div class="row g-3">
                         <div class="col-md-6">
-                            <label class="form-label fw-bold small">Ngày nhận phòng (Check-in) *</label>
-                            <input type="date" name="checkin" id="checkin"
-                                class="form-control py-3 @error('checkin') is-invalid @enderror"
-                                value="{{ old('checkin') }}" min="{{ date('Y-m-d') }}" required>
-                            @error('checkin')
-                            <div class="invalid-feedback">{{ $message }}</div>
-                            @enderror
+                            <input type="date" name="checkin" id="checkin" class="form-control" required>
                         </div>
+
                         <div class="col-md-6">
-                            <label class="form-label fw-bold small">Ngày trả phòng (Check-out) *</label>
-                            <input type="date" name="checkout" id="checkout"
-                                class="form-control py-3 @error('checkout') is-invalid @enderror"
-                                value="{{ old('checkout') }}" min="{{ date('Y-m-d', strtotime('+1 day')) }}" required>
-                            @error('checkout')
-                            <div class="invalid-feedback">{{ $message }}</div>
-                            @enderror
+                            <input type="date" name="checkout" id="checkout" class="form-control" required>
                         </div>
+
                         <div class="col-12">
-                            <label class="form-label fw-bold small">Ghi chú / Yêu cầu đặc biệt</label>
-                            <textarea name="note" class="form-control" rows="3"
-                                placeholder="Ví dụ: Giường đôi, tầng cao, view đẹp...">{{ old('note') }}</textarea>
+                            <textarea name="note" class="form-control" rows="3"></textarea>
                         </div>
                     </div>
 
-
-
-                    <button type="submit" id="btn-submit"
-                        class="btn btn-luxury w-100 py-3 mt-4 fw-bold shadow hover-scale text-uppercase">
+                    <button type="submit" class="btn btn-danger w-100 mt-4 fw-bold">
                         Xác nhận đặt phòng
                     </button>
                 </div>
             </div>
 
-            {{-- Cột phải: Thông tin đơn hàng --}}
+            {{-- CỘT PHẢI --}}
             <div class="col-lg-4">
-                <div class="card border-0 shadow sticky-top" style="top: 100px;">
-                    <div class="card-header bg-dark text-white text-center py-3">
-                        <h5 class="mb-0 font-playfair text-uppercase">Thông tin đơn hàng</h5>
-                    </div>
-                    <div class="card-body">
-                        <img src="{{ $roomImg }}" class="img-fluid rounded mb-3" alt="Room Image">
+                <div class="card shadow">
+                    <div class="card-body text-center">
+                        <img src="{{ $roomImg }}" class="img-fluid mb-3">
 
-                        <h5 class="fw-bold text-warning font-playfair">{{ $roomName }}</h5>
-                        <p class="small text-muted mb-3"><i class="fa-solid fa-bed"></i> Giường King • View Đẹp</p>
+                        <h5>{{ $roomName }}</h5>
+                        <p>{{ number_format($roomPrice) }} ₫ / đêm</p>
 
-                        <hr>
-
-                        <ul class="list-group list-group-flush mb-3">
-                            <li class="list-group-item d-flex justify-content-between px-0">
-                                <span>Đơn giá (đã giảm)</span>
-                                <span class="fw-bold">{{ number_format($roomPrice, 0, ',', '.') }} ₫</span>
-                            </li>
-                            <li class="list-group-item d-flex justify-content-between px-0">
-                                <span>Số đêm</span>
-                                <span class="fw-bold"><span id="nightCount">1</span> đêm</span>
-                            </li>
-                        </ul>
-
-                        <div
-                            class="d-flex justify-content-between align-items-center p-3 bg-light border border-warning rounded">
-                            <span class="h6 mb-0 fw-bold">TỔNG CỘNG:</span>
-                            <div class="text-end">
-                                <div id="loading-spinner" class="spinner-border text-danger spinner-border-sm d-none"
-                                    role="status">
-                                    <span class="visually-hidden">Đang tính...</span>
-                                </div>
-
-                                <span class="h4 mb-0 fw-bold text-danger" id="totalPriceDisplay">
-                                    {{ number_format($roomPrice, 0, ',', '.') }} ₫
-                                </span>
-                            </div>
-                        </div>
+                        <h4 id="totalPriceDisplay">{{ number_format($roomPrice) }} ₫</h4>
                     </div>
                 </div>
             </div>
         </div>
     </form>
 </div>
-@endsection
-
-@section('scripts')
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    const checkinEl = document.getElementById('checkin');
-    const checkoutEl = document.getElementById('checkout');
-    const nightCountEl = document.getElementById('nightCount');
-    const totalPriceEl = document.getElementById('totalPriceDisplay');
-    const hiddenPriceInput = document.getElementById('hiddenPrice');
-    const hiddenNightCountInput = document.getElementById('hiddenNightCount');
-    const loadingSpinner = document.getElementById('loading-spinner');
-    const btnSubmit = document.getElementById('btn-submit');
-
-    const rawPrice = hiddenPriceInput ? parseFloat(hiddenPriceInput.value) : 0;
-
-    // Set ngày mặc định
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(today.getDate() + 1);
-
-    const formatDate = (date) => {
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-    };
-
-    if (!checkinEl.value) checkinEl.value = formatDate(today);
-    if (!checkoutEl.value) checkoutEl.value = formatDate(tomorrow);
-
-    function updatePrice() {
-        const checkinDate = new Date(checkinEl.value);
-        const checkoutDate = new Date(checkoutEl.value);
-
-        if (checkinDate && checkoutDate && checkoutDate > checkinDate) {
-            const diffTime = Math.abs(checkoutDate - checkinDate);
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-            loadingSpinner.classList.remove('d-none');
-            totalPriceEl.classList.add('d-none');
-
-            setTimeout(() => {
-                const totalPrice = diffDays * rawPrice;
-
-                nightCountEl.textContent = diffDays;
-                totalPriceEl.textContent = new Intl.NumberFormat('vi-VN').format(totalPrice) + ' ₫';
-
-                hiddenNightCountInput.value = diffDays;
-
-                loadingSpinner.classList.add('d-none');
-                totalPriceEl.classList.remove('d-none');
-            }, 300);
-        } else {
-            nightCountEl.textContent = '0';
-            totalPriceEl.textContent = '0 ₫';
-            hiddenNightCountInput.value = 0;
-        }
-    }
-
-    checkinEl.addEventListener('change', function() {
-        const currentCheckin = new Date(this.value);
-        if (currentCheckin) {
-            const nextDay = new Date(currentCheckin);
-            nextDay.setDate(nextDay.getDate() + 1);
-
-            const currentCheckout = new Date(checkoutEl.value);
-            if (!checkoutEl.value || currentCheckout <= currentCheckin) {
-                checkoutEl.value = formatDate(nextDay);
-            }
-        }
-        updatePrice();
-    });
-
-    checkoutEl.addEventListener('change', updatePrice);
-
-    updatePrice();
-
-    document.getElementById('bookingForm').addEventListener('submit', function(e) {
-        const nights = parseInt(hiddenNightCountInput.value);
-
-        if (nights <= 0) {
-            e.preventDefault();
-            alert('Vui lòng chọn ngày check-out sau ngày check-in!');
-            return false;
-        }
-
-        btnSubmit.disabled = true;
-        btnSubmit.innerHTML =
-            '<span class="spinner-border spinner-border-sm me-2"></span>Đang xử lý...';
-    });
-});
-
-function refreshCaptcha() {
-    const captchaImg = document.querySelector('.captcha-img img');
-    if (captchaImg) {
-        const src = captchaImg.src;
-        captchaImg.src = src.split('?')[0] + '?' + Math.random();
-    }
-}
-</script>
 @endsection

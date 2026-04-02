@@ -7,13 +7,35 @@ use Illuminate\Support\Facades\DB;
 
 class NodeController extends Controller
 {
-    // PHA 1: Voting (Kiểm tra phòng đã bị ai chiếm chưa)
+    // =========================================================
+    // 🚀 GIAO TIẾP VỚI CLIENT (NODE LÀM NHẠC TRƯỞNG)
+    // =========================================================
+    public function receiveFromClient(Request $request)
+    {
+        $service = new \App\Services\FourPhaseCommitService();
+
+        try {
+            // 🔥 Node này sẽ đứng ra điều phối toàn bộ 4PC
+            $result = $service->executeTransaction($request->all());
+
+            return response()->json($result);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => $e->getMessage()
+            ], 400);
+        }
+    }
+
+    // =========================================================
+    // PHA 1: Voting (Kiểm tra phòng có bị giữ chưa)
+    // =========================================================
     public function canCommit(Request $request)
     {
         $transactionId = $request->input('id'); 
         $roomId = $request->input('room_id');
         
-        // Chống kẹt rác: Chỉ block những giao dịch 'pending' mới tạo trong 2 PHÚT gần nhất!
         $isRoomLocked = DB::table('node_bookings')
             ->where('room_id', $roomId)
             ->where('transaction_id', '!=', $transactionId)
@@ -28,7 +50,9 @@ class NodeController extends Controller
         return response()->json(['status' => 'YES']);
     }
 
-    // PHA 2: Chuẩn bị 
+    // =========================================================
+    // PHA 2: PRE-COMMIT (Ghi tạm)
+    // =========================================================
     public function preCommit(Request $request)
     {
         $transactionId = $request->input('transaction_id');
@@ -47,13 +71,17 @@ class NodeController extends Controller
                 'created_at'     => now(),
                 'updated_at'     => now(),
             ]);
+
             return response()->json(['status' => 'ACK']);
+
         } catch (\Exception $e) {
             return response()->json(['status' => 'FAILED']);
         }
     }
 
-    // PHA 3: Chốt hạ
+    // =========================================================
+    // PHA 3: COMMIT
+    // =========================================================
     public function doCommit(Request $request)
     {
         $transactionId = $request->input('transaction_id');
@@ -61,15 +89,21 @@ class NodeController extends Controller
         $updated = DB::table('node_bookings')
             ->where('transaction_id', $transactionId)
             ->where('status', 'pending')
-            ->update(['status' => 'committed', 'updated_at' => now()]);
+            ->update([
+                'status' => 'committed',
+                'updated_at' => now()
+            ]);
 
         if ($updated) {
             return response()->json(['status' => 'SUCCESS']);
         }
+
         return response()->json(['status' => 'FAILED']);
     }
 
-    // PHA 4: Hủy bỏ
+    // =========================================================
+    // PHA 4: ABORT (Rollback)
+    // =========================================================
     public function abort(Request $request)
     {
         $transactionId = $request->input('transaction_id');
@@ -85,7 +119,10 @@ class NodeController extends Controller
         if ($exists) {
             DB::table('node_bookings')
                 ->where('transaction_id', $transactionId)
-                ->update(['status' => $reason, 'updated_at' => now()]);
+                ->update([
+                    'status' => $reason,
+                    'updated_at' => now()
+                ]);
         } else {
             DB::table('node_bookings')->insert([
                 'transaction_id' => $transactionId,
@@ -102,7 +139,7 @@ class NodeController extends Controller
     }
 
     // =========================================================
-    // VŨ KHÍ TỐI THƯỢNG: CỔNG NHẬN DỮ LIỆU ĐỒNG BỘ BÙ (MANUAL SYNC)
+    // 🔥 FORCE SYNC (ĐỒNG BỘ BÙ)
     // =========================================================
     public function forceSync(Request $request)
     {
@@ -114,7 +151,6 @@ class NodeController extends Controller
                 ->exists();
 
             if ($exists) {
-                // Đã có đơn -> Cập nhật lại cho chắc chắn là 'committed'
                 DB::table('node_bookings')
                     ->where('transaction_id', $data['transaction_id'])
                     ->update([
@@ -122,7 +158,6 @@ class NodeController extends Controller
                         'updated_at' => now()
                     ]);
             } else {
-                // Chưa có (do sập nguồn) -> Chèn mới vào!
                 DB::table('node_bookings')->insert([
                     'transaction_id' => $data['transaction_id'],
                     'node_port'      => 80,

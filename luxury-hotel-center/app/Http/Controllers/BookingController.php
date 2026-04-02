@@ -5,14 +5,12 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Booking;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Http;
 use Mews\Captcha\Facades\Captcha;
-use Carbon\Carbon; 
-use App\Services\FourPhaseCommitService;
+use Carbon\Carbon;
 
 class BookingController extends Controller
 {
-    protected $fourPCService;
-
     // TỪ ĐIỂN 22 PHÒNG VẬT LÝ KHÁCH SẠN
     private $roomInstances = [
         'Deluxe Ocean View'   => [101, 102, 103, 104, 105, 106, 107, 108, 109, 110],
@@ -20,11 +18,6 @@ class BookingController extends Controller
         'Signature Penthouse' => [301, 302, 303, 304],
         'Presidential Villa'  => [401, 402]
     ];
-
-    public function __construct(FourPhaseCommitService $fourPCService)
-    {
-        $this->fourPCService = $fourPCService;
-    }
 
     // 1. Hiển thị Form + danh sách phòng còn trống
     public function create(Request $request)
@@ -44,106 +37,72 @@ class BookingController extends Controller
         return view('bookings.create', compact('roomName', 'roomPrice', 'roomImg', 'availableRooms'));
     }
 
-    // 2. Xử lý đặt phòng + 4 Phase Commit
+    // 2. GỬI REQUEST ĐẾN SERVER NODE
     public function store(Request $request)
     {
         // 1. Validate
         $request->validate([
-            'name'     => 'required|string|max:255',
-            'phone'    => 'required|string',
-            'email'    => 'required|email',
-            'checkin'  => 'required|date|after_or_equal:today',
-            'checkout' => 'required|date|after:checkin',
-            'country'  => 'required', 
-        ], [
-            'checkout.after' => 'Ngày trả phòng phải sau ngày nhận.',
+            'name'        => 'required|string|max:255',
+            'phone'       => 'required|string',
+            'email'       => 'required|email',
+            'room_id'     => 'required',
+            'target_node' => 'required',
+            'checkin'     => 'required|date',
+            'checkout'    => 'required|date',
         ]);
 
-        // 2. Chặn double booking
-        if ($request->has('room_id')) {
-            $isRoomBusy = Booking::where('room_id', $request->room_id)
-                ->whereIn('status', ['pending', 'confirmed', 'checked_in'])
-                ->exists();
+        // 2. Lấy node user chọn
+        $targetNodeUrl = $request->input('target_node');
 
-            if ($isRoomBusy) {
-                return back()->with('error', 
-                    'Rất tiếc! Phòng số ' . $request->room_id . 
-                    ' đang có khách khác giữ. Vui lòng chọn phòng khác!'
-                )->withInput();
-            }
-        }
+        // 3. Chuẩn bị data gửi đi
+        $bookingData = [
+            'id'       => uniqid('txn_'),
+            'room_id'  => $request->input('room_id'),
+            'name'     => $request->input('name'),
+            'email'    => $request->input('email'),
+            'phone'    => $request->input('phone'),
+            'checkin'  => $request->input('checkin'),
+            'checkout' => $request->input('checkout'),
+        ];
 
         try {
-            $booking = new Booking();
+            // 🚀 GỬI REQUEST ĐẾN NODE (NODE sẽ làm coordinator)
+            $response = Http::withoutVerifying()
+                ->timeout(10)
+                ->post($targetNodeUrl . '/api/client-book', $bookingData);
 
-            // Gán dữ liệu
-            $booking->user_id     = Auth::id();
-            $booking->name        = $request->name;       
-            $booking->email       = $request->email;
-            $booking->phone       = $request->phone;
-            $booking->nationality = $request->input('country', 'Vietnam'); 
+            // ✅ SUCCESS
+            if ($response->ok() && $response->json('status') === 'success') {
 
-            if ($request->has('room_id')) {
-                $booking->room_id = $request->room_id;
-            }
+                $deadNodes = $response->json('dead_nodes', []);
 
-            // Xử lý ngày
-            $checkInDate  = Carbon::parse($request->checkin);
-            $checkOutDate = Carbon::parse($request->checkout);
-            $realNights = max(1, $checkInDate->diffInDays($checkOutDate));
-
-            $booking->check_in  = $request->checkin;      
-            $booking->check_out = $request->checkout; 
-            $booking->total_nights = $realNights;
-            $booking->total_price = $request->input('real_price') * $realNights;
-            $booking->note = "Phòng: " . ($request->room_name ?? 'Không rõ') . " | " . $request->note;
-
-            $booking->status = 'pending';
-            $booking->save();
-
-            // --- KÍCH HOẠT HỆ PHÂN TÁN 4 PHA (BẢN CHUẨN TỐI THƯỢNG) ---
-            $result = $this->fourPCService->executeTransaction($booking->toArray());
-
-            // ✅ Check an toàn tránh crash
-            if (isset($result['status']) && $result['status'] === 'success') {
-
-                $booking->update(['status' => 'confirmed']);
-
-                // ✅ Không bị undefined index
-                $deadNodes = $result['dead_nodes'] ?? [];
-
-                // ⚠️ Có server chết (degraded mode)
                 if (!empty($deadNodes)) {
                     $deadNames = implode(', ', $deadNodes);
 
-                    $warningMsg = "Đặt phòng thành công! Tuy nhiên, [ $deadNames ] đang bị tắt hoặc mất kết nối. Hệ thống sẽ đồng bộ bù sau.";
-
-                    return redirect()->route('home')->with('success', $warningMsg);
+                    return redirect()->route('home')->with(
+                        'success',
+                        "Đặt phòng thành công! Tuy nhiên, [ $deadNames ] đang tắt. Các Server còn sống đã commit dữ liệu an toàn."
+                    );
                 }
 
-                // ✅ Full success
                 return redirect()->route('home')->with(
                     'success',
-                    'Tuyệt vời! Đặt phòng thành công và dữ liệu đã đồng bộ mượt mà lên toàn bộ 5 Server Node.'
+                    'Tuyệt vời! Đặt phòng thành công và dữ liệu đã đồng bộ 100% lên 5 Server.'
                 );
-
-            } else {
-                // ❌ Fail toàn hệ thống
-                $booking->update(['status' => 'cancelled']);
-
-                return back()->with(
-                    'error',
-                    'Lỗi đồng bộ nghiêm trọng. Đơn đã hủy!'
-                )->withInput();
             }
+
+            // ❌ NODE TRẢ VỀ LỖI
+            $errorMsg = $response->json('message') ?? 'Lỗi không xác định từ Server Node.';
+
+            return back()->with('error', $errorMsg)->withInput();
 
         } catch (\Exception $e) {
 
-            if (isset($booking) && $booking->id) {
-                $booking->update(['status' => 'cancelled']);
-            }
-
-            return back()->with('error', $e->getMessage())->withInput();
+            // ❌ NODE DIE / TIMEOUT
+            return back()->with(
+                'error',
+                'Server bạn chọn đang bị sập hoặc mất kết nối. Vui lòng chọn server khác!'
+            )->withInput();
         }
     }
 
