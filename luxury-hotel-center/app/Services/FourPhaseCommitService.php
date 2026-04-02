@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
-use Illuminate\Http\Client\Pool;
 
 class FourPhaseCommitService
 {
@@ -13,10 +12,10 @@ class FourPhaseCommitService
     {
         $this->nodes = [
             'https://luxury-hotel-distributed-system-49mq.onrender.com', // Đầu não
-            'https://node-3-ngocc.onrender.com',
-            'https://node-2-khai-80yz.onrender.com',
-            'https://node-kien.onrender.com',
-            'https://node-5-duy-b0ca.onrender.com'
+            'https://node-3-ngocc.onrender.com', // Ngọc
+            'https://node-2-khai-80yz.onrender.com', // Khải
+            'https://node-kien.onrender.com', // Kiên
+            'https://node-5-duy-b0ca.onrender.com' // Duy
         ];
     }
 
@@ -27,7 +26,7 @@ class FourPhaseCommitService
         $customerName = $bookingData['name'] ?? null;
         $pointOfNoReturn = false; 
         
-        // VŨ KHÍ MỚI: Khai báo biến ngay trong hàm, truyền tay qua các Pha, KHÔNG BAO GIỜ bị mất dữ liệu!
+        // Khởi tạo sổ nợ trống
         $deadNodesList = []; 
 
         try {
@@ -45,7 +44,6 @@ class FourPhaseCommitService
 
             $this->sendQuorumRequests('/api/do-commit', ['transaction_id' => $transactionId], 'SUCCESS', $deadNodesList);
 
-            // TRẢ VỀ TRỰC TIẾP KẾT QUẢ VÀ DANH SÁCH MÁY CHẾT
             return [
                 'status' => 'success',
                 'dead_nodes' => array_unique($deadNodesList)
@@ -81,9 +79,12 @@ class FourPhaseCommitService
         }
     }
 
-    // GHI SỔ NỢ BẰNG THAM CHIẾU (&$deadNodesList)
+    // VŨ KHÍ TỐI THƯỢNG: TUẦN TỰ, TÓM CỔ TỪNG MÁY KHÔNG BỎ SÓT (BỎ HTTP::POOL)
     private function sendQuorumRequests($endpoint, $payload, $expectedStatus, &$deadNodesList): bool
     {
+        $successCount = 0;
+        $roomHijackedError = null;
+
         $nodeNames = [
             'https://luxury-hotel-distributed-system-49mq.onrender.com' => 'Máy Đầu Não',
             'https://node-3-ngocc.onrender.com' => 'Máy Ngọc',
@@ -92,38 +93,40 @@ class FourPhaseCommitService
             'https://node-5-duy-b0ca.onrender.com' => 'Máy Duy'
         ];
 
-        $responses = Http::pool(function (Pool $pool) use ($endpoint, $payload) {
-            foreach ($this->nodes as $nodeUrl) {
-                $pool->as($nodeUrl)->withOptions(['verify' => false])->connectTimeout(3)->timeout(5)->post($nodeUrl . $endpoint, $payload);
-            }
-        });
+        foreach ($this->nodes as $nodeUrl) {
+            try {
+                // Đi từng nhà gõ cửa, nếu 3s không thưa -> Đạp cửa ghi sổ!
+                $response = Http::withoutVerifying()->timeout(3)->post($nodeUrl . $endpoint, $payload);
 
-        $successCount = 0;
-        $roomHijackedError = null; 
+                // KIỂM TRA CỰC GẮT: Máy chết, hoặc Render trả về trang HTML Suspend (json() = null)
+                if (!$response->ok() || $response->json('status') === null) {
+                    $deadNodesList[] = $nodeNames[$nodeUrl] ?? "Máy ẩn danh";
+                    continue; 
+                }
 
-        foreach ($responses as $nodeUrl => $response) {
-            // Đã kiểm tra cực gắt: Request chết, timeout, Render trả về HTML 502, JSON lỗi... tóm cổ hết!
-            if (!$response || $response instanceof \Exception || !$response->ok() || $response->json('status') === null) {
-                $deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
-                continue; 
-            }
-            
-            $status = $response->json('status');
-            
-            if (strpos($endpoint, 'can-commit') !== false && $status === 'NO') {
-                $roomHijackedError = "CƯỚP PHÒNG|Phòng số {$payload['room_id']} vừa bị khách khác khóa trước!";
-                continue; 
-            }
+                $status = $response->json('status');
 
-            if ($status === $expectedStatus) {
-                $successCount++;
-            } else {
-                $deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
+                if (strpos($endpoint, 'can-commit') !== false && $status === 'NO') {
+                    $roomHijackedError = "CƯỚP PHÒNG|Phòng số {$payload['room_id']} vừa bị khách khác khóa trước!";
+                    continue;
+                }
+
+                if ($status === $expectedStatus) {
+                    $successCount++;
+                } else {
+                    $deadNodesList[] = $nodeNames[$nodeUrl] ?? "Máy ẩn danh";
+                }
+
+            } catch (\Exception $e) {
+                // Bắt trọn ổ: Lỗi sập server, đứt cáp quang, nghẽn mạng...
+                $deadNodesList[] = $nodeNames[$nodeUrl] ?? "Máy ẩn danh";
             }
         }
 
-        if ($roomHijackedError) { throw new \Exception($roomHijackedError); }
-        
-        return $successCount >= 1; 
+        if ($roomHijackedError) {
+            throw new \Exception($roomHijackedError);
+        }
+
+        return $successCount >= 1; // Chỉ cần 1 máy sống là tiếp tục!
     }
-}   
+}

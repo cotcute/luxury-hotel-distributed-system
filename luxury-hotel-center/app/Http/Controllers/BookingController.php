@@ -101,30 +101,40 @@ class BookingController extends Controller
             $booking->status = 'pending';
             $booking->save();
 
-            // --- KÍCH HOẠT HỆ PHÂN TÁN 4 PHA (BẢN CHUẨN) ---
+            // --- KÍCH HOẠT HỆ PHÂN TÁN 4 PHA (BẢN CHUẨN TỐI THƯỢNG) ---
             $result = $this->fourPCService->executeTransaction($booking->toArray());
 
-            if ($result['status'] === 'success') {
+            // ✅ Check an toàn tránh crash
+            if (isset($result['status']) && $result['status'] === 'success') {
+
                 $booking->update(['status' => 'confirmed']);
-                
-                // Lấy mảng máy chết trực tiếp từ kết quả trả về
+
+                // ✅ Không bị undefined index
                 $deadNodes = $result['dead_nodes'] ?? [];
 
-                if (count($deadNodes) > 0) {
+                // ⚠️ Có server chết (degraded mode)
+                if (!empty($deadNodes)) {
                     $deadNames = implode(', ', $deadNodes);
+
                     $warningMsg = "Đặt phòng thành công! Tuy nhiên, [ $deadNames ] đang bị tắt hoặc mất kết nối. Hệ thống sẽ đồng bộ bù sau.";
-                    
+
                     return redirect()->route('home')->with('success', $warningMsg);
-                } else {
-                    return redirect()->route('home')->with(
-                        'success',
-                        'Tuyệt vời! Đặt phòng thành công và dữ liệu đã đồng bộ mượt mà lên toàn bộ 5 Server Node.'
-                    );
                 }
 
+                // ✅ Full success
+                return redirect()->route('home')->with(
+                    'success',
+                    'Tuyệt vời! Đặt phòng thành công và dữ liệu đã đồng bộ mượt mà lên toàn bộ 5 Server Node.'
+                );
+
             } else {
+                // ❌ Fail toàn hệ thống
                 $booking->update(['status' => 'cancelled']);
-                return back()->with('error', 'Lỗi đồng bộ nghiêm trọng. Đơn đã hủy!')->withInput();
+
+                return back()->with(
+                    'error',
+                    'Lỗi đồng bộ nghiêm trọng. Đơn đã hủy!'
+                )->withInput();
             }
 
         } catch (\Exception $e) {
