@@ -101,24 +101,27 @@ class BookingController extends Controller
             $booking->status = 'pending';
             $booking->save();
 
-            // --- 4 Phase Commit ---
+            // --- KÍCH HOẠT HỆ PHÂN TÁN 4 PHA ---
             $isSuccess = $this->fourPCService->executeTransaction($booking->toArray());
 
             if ($isSuccess) {
                 $booking->update(['status' => 'confirmed']);
-
-                // ✅ THÔNG BÁO ĐỘNG
-                $successMsg = session('sync_warning') 
-                    ?? 'Đặt phòng thành công! Dữ liệu đã đồng bộ mượt mà lên toàn bộ 5 Server Node.';
-
-                return redirect()->route('home')->with('success', $successMsg);
+                
+                // KIỂM TRA XEM CÓ LỜI CẢNH BÁO MÁY CHẾT TỪ SERVICE KHÔNG
+                if (session()->has('sync_warning')) {
+                    // Có server chết
+                    return redirect()->route('home')->with('success', session('sync_warning'));
+                } else {
+                    // Tất cả server OK
+                    return redirect()->route('home')->with(
+                        'success', 
+                        'Tuyệt vời! Đặt phòng thành công và dữ liệu đã đồng bộ mượt mà lên toàn bộ 5 Server Node.'
+                    );
+                }
 
             } else {
                 $booking->update(['status' => 'cancelled']);
-
-                return back()->with('error', 
-                    'Lỗi đồng bộ: Một số server bị lỗi. Đơn đã hủy!'
-                )->withInput();
+                return back()->with('error', 'Lỗi đồng bộ nghiêm trọng. Đơn đã hủy!')->withInput();
             }
 
         } catch (\Exception $e) {

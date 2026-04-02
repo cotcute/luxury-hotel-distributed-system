@@ -12,9 +12,8 @@ class FourPhaseCommitService
 
     public function __construct()
     {
-        // ĐIỀN ĐÚNG 5 LINK RENDER CỦA KHÁNH, KHẢI, NGỌC, KIÊN, DUY VÀO ĐÂY
         $this->nodes = [
-           'https://luxury-hotel-distributed-system-49mq.onrender.com', // Máy Đầu não (Khánh)
+            'https://luxury-hotel-distributed-system-49mq.onrender.com', // Máy Khánh
             'https://node-3-ngocc.onrender.com', // Máy Ngọc
             'https://node-2-khai-80yz.onrender.com', // Máy Khải
             'https://node-kien.onrender.com', // Máy Kiên
@@ -24,10 +23,6 @@ class FourPhaseCommitService
 
     public function executeTransaction(array $bookingData): bool
     {
-        if (count($this->nodes) !== 5) {
-            throw new \Exception("Hệ thống chưa đủ cấu hình 5 Server Node!");
-        }
-
         $transactionId = $bookingData['id'];
         $roomId = $bookingData['room_id'] ?? null;
         $customerName = $bookingData['name'] ?? null;
@@ -37,7 +32,7 @@ class FourPhaseCommitService
             // PHA 1: HỎI Ý KIẾN
             if (!$this->phase1CanCommit($bookingData)) {
                 $this->abortTransaction($transactionId, "TỪ CHỐI (PHA 1)", $roomId, $customerName);
-                throw new \Exception("Giao dịch bị từ chối: Không đủ số lượng Node đồng ý, hoặc mạng quá yếu!");
+                throw new \Exception("Giao dịch bị từ chối: Không đủ Node sống hoặc bị chiếm phòng!");
             }
 
             // PHA 2: CHUẨN BỊ
@@ -47,7 +42,6 @@ class FourPhaseCommitService
             }
 
             $pointOfNoReturn = true;
-            sleep(5); 
 
             // PHA 3: CHỐT HẠ
             $this->phase3DoCommit($transactionId);
@@ -57,16 +51,13 @@ class FourPhaseCommitService
             $errorMsg = $e->getMessage();
             
             if ($pointOfNoReturn) {
-                Log::warning("Giao dịch $transactionId thành công. Nhưng có lỗi cục bộ lúc Do-Commit: " . $errorMsg);
                 return true; 
             }
 
-            // Xử lý báo lỗi ra màn hình
             if (strpos($errorMsg, 'CƯỚP PHÒNG') !== false) {
                 $this->abortTransaction($transactionId, "ABORTED (BỊ CƯỚP PHÒNG)", $roomId, $customerName);
                 throw $e; 
-            } 
-            else {
+            } else {
                 $this->abortTransaction($transactionId, "HỦY (KHÔNG ĐỦ NODE SỐNG)", $roomId, $customerName);
                 throw $e;
             }
@@ -99,10 +90,19 @@ class FourPhaseCommitService
     }
 
     // =========================================================================
-    // VŨ KHÍ TỐI THƯỢNG: CƠ CHẾ EVENTUAL CONSISTENCY (YÊU CẦU CỦA THẦY)
+    // VŨ KHÍ: ĐIỂM DANH MÁY CHẾT (EVENTUAL CONSISTENCY)
     // =========================================================================
     private function sendQuorumRequests($endpoint, $payload, $expectedStatus): bool
     {
+        // Danh bạ để điểm danh
+        $nodeNames = [
+            'https://luxury-hotel-distributed-system-49mq.onrender.com' => 'Máy Đầu Não (Khánh)',
+            'https://node-3-ngocc.onrender.com' => 'Máy Ngọc',
+            'https://node-2-khai-80yz.onrender.com' => 'Máy Khải',
+            'https://node-kien.onrender.com' => 'Máy Kiên',
+            'https://node-5-duy-b0ca.onrender.com' => 'Máy Duy'
+        ];
+
         $responses = Http::pool(function (Pool $pool) use ($endpoint, $payload) {
             foreach ($this->nodes as $nodeUrl) {
                 $pool->as($nodeUrl)->withOptions(['verify' => false])->connectTimeout(3)->timeout(5)->post($nodeUrl . $endpoint, $payload);
@@ -110,16 +110,18 @@ class FourPhaseCommitService
         });
 
         $successCount = 0;
+        $deadNodesList = []; // Mảng chứa tên các máy bị tắt
         $roomHijackedError = null; 
 
         foreach ($responses as $nodeUrl => $response) {
+            // NẾU MÁY BỊ TẮT HOẶC MẤT MẠNG -> GHI TÊN VÀO SỔ ĐEN
             if ($response instanceof \Exception || !$response->ok()) {
+                $deadNodesList[] = $nodeNames[$nodeUrl] ?? 'Máy Ẩn Danh';
                 continue; 
             }
             
             $status = $response->json('status');
             
-            // ƯU TIÊN 1: Lỗi Cướp Phòng (Logic nghiệp vụ) -> Vẫn phải bắt liền để chống trùng lặp!
             if (strpos($endpoint, 'can-commit') !== false && $status === 'NO') {
                 $roomHijackedError = "CƯỚP PHÒNG|Phòng số {$payload['room_id']} vừa bị khách khác khóa trước!";
                 continue; 
@@ -134,21 +136,18 @@ class FourPhaseCommitService
             throw new \Exception($roomHijackedError);
         }
 
-        // --- SỬA LOGIC THEO Ý THẦY Ở ĐÂY ---
-        // Hệ thống có 5 máy. Chỉ cần ÍT NHẤT 1 máy phản hồi (chính là máy Đầu não) thì vẫn cho qua!
+        // CẦN ÍT NHẤT 1 MÁY SỐNG ĐỂ CHO PHÉP ĐẶT PHÒNG
         $minimumRequired = 1; 
 
         if ($successCount >= $minimumRequired) {
-            // Tính số máy chết để báo ra màn hình xanh
-            $deadNodes = count($this->nodes) - $successCount;
-            if ($deadNodes > 0) {
-                // Ném một tín hiệu vào Session để Controller bắt được
-                session()->flash('sync_warning', "Đặt phòng thành công! (Có $deadNodes/5 Server đang tắt, hệ thống sẽ tự động đồng bộ bù sau theo Eventual Consistency).");
+            // Nếu có máy chết, gom tên lại và quăng ra màn hình
+            if (count($deadNodesList) > 0) {
+                $deadNames = implode(', ', $deadNodesList);
+                session()->flash('sync_warning', "Đặt phòng thành công trên các Server đang Online! Tuy nhiên, [ $deadNames ] đang bị tắt hoặc mất mạng. Hệ thống sẽ đồng bộ bù sau.");
             }
             return true; 
         }
 
-        // Nếu sập cả 5 máy thì mới văng lỗi
         throw new \Exception("Lỗi Mạng Nghiêm Trọng: Sập toàn bộ hệ thống! Không có máy nào phản hồi.");
     }
 }
