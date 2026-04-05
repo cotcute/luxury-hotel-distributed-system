@@ -24,3 +24,12 @@ Route::get('/', function () {
 
     return view('welcome', compact('port', 'transactions', 'logs'));
 });
+
+Route::get('/run-migrations', function () {
+    try {
+        \Illuminate\Support\Facades\Artisan::call('migrate', ['--force' => true]);
+        return response()->json(['message' => 'Migrate thành công! Bảng node_logs đã sẵn sàng.']);
+    } catch (\Exception $e) {
+        return response()->json(['error' => $e->getMessage()]);
+    }
+});
