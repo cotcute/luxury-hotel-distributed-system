@@ -54,15 +54,27 @@ class NodeController extends Controller
     {
         $rawId = $request->input('transaction_id');
         $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
-        DB::table('node_bookings')->updateOrInsert(
-            ['transaction_id' => $transactionId, 'node_port' => rtrim(config('app.url'), '/') ?: gethostname()],
-            [
+        $port = rtrim(config('app.url'), '/') ?: gethostname();
+        
+        $exists = DB::table('node_bookings')->where('transaction_id', $transactionId)->exists();
+        if ($exists) {
+            DB::table('node_bookings')->where('transaction_id', $transactionId)->update([
+                'status' => 'committed',
                 'room_id' => $request->input('room_id'),
                 'customer_name' => $request->input('customer_name'),
-                'status' => 'committed', 
                 'updated_at' => now()
-            ]
-        );
+            ]);
+        } else {
+            DB::table('node_bookings')->insert([
+                'transaction_id' => $transactionId,
+                'node_port' => $port,
+                'room_id' => $request->input('room_id'),
+                'customer_name' => $request->input('customer_name'),
+                'status' => 'committed',
+                'created_at' => now(),
+                'updated_at' => now()
+            ]);
+        }
         return response()->json(['status' => 'SUCCESS']);
     }
 
