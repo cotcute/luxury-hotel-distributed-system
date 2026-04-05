@@ -4,9 +4,9 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\DB;
 
 Route::get('/', function () {
-    $port = request()->server('SERVER_PORT');
+    $port = request()->getHost();
     
-    // Chỉ lấy lịch sử giao dịch của đúng cái Port này
+    // Chỉ lấy lịch sử giao dịch của đúng cái Host này
     $transactions = DB::table('node_bookings')
         ->where('node_port', $port)
         ->orderBy('updated_at', 'desc')

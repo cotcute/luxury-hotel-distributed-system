@@ -38,7 +38,7 @@ class NodeController extends Controller
         $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
         $roomId        = $request->input('room_id');
         $customerName  = $request->input('customer_name', '');
-        $nodeIdentity  = rtrim(config('app.url'), '/') ?: gethostname();
+        $nodeIdentity  = request()->getHost();
         try {
             DB::table('node_bookings')->updateOrInsert(
                 ['transaction_id' => $transactionId, 'node_port' => $nodeIdentity],
@@ -54,7 +54,7 @@ class NodeController extends Controller
     {
         $rawId = $request->input('transaction_id');
         $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
-        $port = rtrim(config('app.url'), '/') ?: gethostname();
+        $port = request()->getHost();
         
         $exists = DB::table('node_bookings')->where('transaction_id', $transactionId)->exists();
         if ($exists) {
