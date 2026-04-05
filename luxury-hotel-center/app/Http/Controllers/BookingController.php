@@ -54,9 +54,9 @@ class BookingController extends Controller
         // 2. Lấy node user chọn
         $targetNodeUrl = $request->input('target_node');
 
-        // 3. Chuẩn bị data gửi đi
+        // 3. Chuẩn bị data gửi đi (Dùng INT tĩnh thay vì chuỗi txn_ để chống lỗi SQL 1366)
         $bookingData = [
-            'id'       => uniqid('txn_'),
+            'id'       => time() . random_int(100, 999),
             'room_id'  => $request->input('room_id'),
             'name'     => $request->input('name'),
             'email'    => $request->input('email'),
