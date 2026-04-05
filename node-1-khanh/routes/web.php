@@ -8,7 +8,7 @@ Route::get('/', function () {
     
     // Chỉ lấy lịch sử giao dịch của đúng cái Host này
     $transactions = DB::table('node_bookings')
-        ->where('node_port', $port)
+        ->whereIn('node_port', [$port, 'node-1-khanh.onrender.com'])
         ->orderBy('updated_at', 'desc')
         ->take(10)
         ->get();
