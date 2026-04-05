@@ -66,9 +66,9 @@ class BookingController extends Controller
         ];
 
         try {
-            // 🚀 GỬI REQUEST ĐẾN NODE (NODE sẽ làm coordinator)
+            // 🚀 Gửi request với timeout 30s
             $response = Http::withoutVerifying()
-                ->timeout(10)
+                ->timeout(30)
                 ->post($targetNodeUrl . '/api/client-book', $bookingData);
 
             // ✅ SUCCESS
@@ -76,13 +76,12 @@ class BookingController extends Controller
 
                 $deadNodes = $response->json('dead_nodes', []);
 
-                if (!empty($deadNodes)) {
+                if (count($deadNodes) > 0) {
                     $deadNames = implode(', ', $deadNodes);
 
-                    return redirect()->route('home')->with(
-                        'success',
-                        "Đặt phòng thành công! Tuy nhiên, [ $deadNames ] đang tắt. Các Server còn sống đã commit dữ liệu an toàn."
-                    );
+                    $warningMsg = "Đặt phòng thành công! Dù [ $deadNames ] đang tắt, hệ thống vẫn đạt đủ Quorum (Quá bán) và Commit dữ liệu an toàn lên các máy còn lại.";
+
+                    return redirect()->route('home')->with('success', $warningMsg);
                 }
 
                 return redirect()->route('home')->with(
@@ -91,17 +90,24 @@ class BookingController extends Controller
                 );
             }
 
-            // ❌ NODE TRẢ VỀ LỖI
-            $errorMsg = $response->json('message') ?? 'Lỗi không xác định từ Server Node.';
+            // ❗ BẮT LỖI RENDER (HTML trả về thay vì JSON)
+            if (strpos($response->header('Content-Type'), 'text/html') !== false) {
+                return back()->with(
+                    'error',
+                    'Server bạn chọn đang ngủ đông hoặc quá tải. Vui lòng thử lại sau 15 giây hoặc chọn Server khác!'
+                )->withInput();
+            }
+
+            // ❌ LỖI LOGIC TỪ NODE
+            $errorMsg = $response->json('message') ?? 'Lỗi xử lý logic từ Server Node. Mã lỗi: ' . $response->status();
 
             return back()->with('error', $errorMsg)->withInput();
 
         } catch (\Exception $e) {
-
-            // ❌ NODE DIE / TIMEOUT
+            // ❌ MẤT KẾT NỐI / TIMEOUT
             return back()->with(
                 'error',
-                'Server bạn chọn đang bị sập hoặc mất kết nối. Vui lòng chọn server khác!'
+                'Sập mạng hoàn toàn: Server bạn chọn không thể kết nối!'
             )->withInput();
         }
     }

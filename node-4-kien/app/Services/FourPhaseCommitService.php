@@ -24,25 +24,36 @@ class FourPhaseCommitService
         $transactionId = $bookingData['id'];
         $roomId = $bookingData['room_id'];
         $customerName = $bookingData['name'];
-        $deadNodesList = []; 
+        $deadNodesList = [];
 
         try {
-            // PHA 1: PRE-CHECK (A hỏi B, C, D, E: "OK không?")
-            if (!$this->sendQuorumRequests('/api/can-commit', ['id' => $transactionId, 'room_id' => $roomId], 'YES', $deadNodesList)) {
+            // 🔹 PHA 1: PRE-CHECK
+            if (!$this->sendQuorumRequests('/api/can-commit', [
+                'id' => $transactionId,
+                'room_id' => $roomId
+            ], 'YES', $deadNodesList)) {
+
                 $this->abortTransaction($transactionId, "ABORTED", $roomId, $customerName);
                 throw new \Exception("Phòng đã bị chiếm trên Server khác!");
             }
 
-            // PHA 2: RESERVE (Tất cả Server giữ tài nguyên - Pending)
-            if (!$this->sendQuorumRequests('/api/pre-commit', ['transaction_id' => $transactionId, 'room_id' => $roomId, 'customer_name' => $customerName], 'ACK', $deadNodesList)) {
+            // 🔹 PHA 2: PRE-COMMIT (RESERVE)
+            if (!$this->sendQuorumRequests('/api/pre-commit', [
+                'transaction_id' => $transactionId,
+                'room_id' => $roomId,
+                'customer_name' => $customerName
+            ], 'ACK', $deadNodesList)) {
+
                 $this->abortTransaction($transactionId, "ABORTED", $roomId, $customerName);
                 throw new \Exception("Lỗi ở Pha 2: Reserve.");
             }
 
-            // PHA 3: CONFIRM (A quyết định dựa vào vote - Logic nằm trong hàm sendQuorumRequests)
-            
-            // PHA 4: FINALIZE (Các server Commit + Đồng bộ)
-            $this->sendQuorumRequests('/api/do-commit', ['transaction_id' => $transactionId], 'SUCCESS', $deadNodesList);
+            // 🔹 PHA 3: (LOGIC QUORUM nằm trong sendQuorumRequests)
+
+            // 🔹 PHA 4: COMMIT
+            $this->sendQuorumRequests('/api/do-commit', [
+                'transaction_id' => $transactionId
+            ], 'SUCCESS', $deadNodesList);
 
             return [
                 'status' => 'success',
@@ -54,52 +65,72 @@ class FourPhaseCommitService
         }
     }
 
-    public function abortTransaction($transactionId, $reason, $roomId, $customerName) {
+    public function abortTransaction($transactionId, $reason, $roomId, $customerName)
+    {
         foreach ($this->allNodes as $nodeUrl => $nodeName) {
             try {
                 Http::withoutVerifying()->timeout(3)->post($nodeUrl . '/api/abort', [
-                    'transaction_id' => $transactionId, 'reason' => $reason, 'room_id' => $roomId, 'customer_name' => $customerName
+                    'transaction_id' => $transactionId,
+                    'reason' => $reason,
+                    'room_id' => $roomId,
+                    'customer_name' => $customerName
                 ]);
-            } catch (\Exception $e) {}
+            } catch (\Exception $e) {
+                // bỏ qua lỗi
+            }
         }
     }
 
+    // 🚀 QUORUM VERSION (>= 3/5 là OK)
     private function sendQuorumRequests($endpoint, $payload, $expectedStatus, &$deadNodesList): bool
     {
-        $aliveCount = 0;
         $agreedCount = 0;
-        $hijackedError = null;
+        $hijackedError = false;
 
-        foreach ($this->allNodes as $nodeUrl => $nodeName) {
-            try {
-                $response = Http::withoutVerifying()->timeout(3)->post($nodeUrl . $endpoint, $payload);
+        $totalNodes = count($this->allNodes); // 5 máy
+        $quorumRequired = ceil($totalNodes / 2); // 3 máy
 
-                if (!$response->ok() || $response->json('status') === null) {
-                    $deadNodesList[] = $nodeName;
-                    continue; 
-                }
+        // ⚡ GỬI SONG SONG
+        $responses = Http::pool(function (\Illuminate\Http\Client\Pool $pool) use ($endpoint, $payload) {
+            foreach ($this->allNodes as $nodeUrl => $nodeName) {
+                $pool->as($nodeUrl)
+                    ->withoutVerifying()
+                    ->timeout(5)
+                    ->post($nodeUrl . $endpoint, $payload);
+            }
+        });
 
-                $aliveCount++;
-                $status = $response->json('status');
+        foreach ($responses as $nodeUrl => $response) {
+            $nodeName = $this->allNodes[$nodeUrl];
 
-                if (strpos($endpoint, 'can-commit') !== false && $status === 'NO') {
-                    $hijackedError = true;
-                    break; 
-                }
+            // ❌ NODE CHẾT / TIMEOUT / HTML
+            if ($response instanceof \Exception || !$response->ok() || $response->json('status') === null) {
+                $deadNodesList[] = $nodeName;
+                continue;
+            }
 
-                if ($status === $expectedStatus) {
-                    $agreedCount++;
-                } else {
-                    $deadNodesList[] = $nodeName;
-                }
-            } catch (\Exception $e) {
+            $status = $response->json('status');
+
+            // ❗ BỊ CƯỚP PHÒNG
+            if (strpos($endpoint, 'can-commit') !== false && $status === 'NO') {
+                $hijackedError = true;
+                continue;
+            }
+
+            // ✅ ĐỒNG Ý
+            if ($status === $expectedStatus) {
+                $agreedCount++;
+            } else {
                 $deadNodesList[] = $nodeName;
             }
         }
 
-        if ($hijackedError) return false;
+        // ❗ Nếu có máy báo NO → fail ngay
+        if ($hijackedError) {
+            return false;
+        }
 
-        // Bỏ qua máy chết. Các máy SỐNG đều phải đồng thuận!
-        return ($aliveCount > 0 && $agreedCount === $aliveCount);
+        // 🔥 QUORUM LOGIC
+        return ($agreedCount >= $quorumRequired);
     }
-}
+}   
