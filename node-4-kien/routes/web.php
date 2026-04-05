@@ -6,21 +6,29 @@ use Illuminate\Support\Facades\DB;
 Route::get('/', function () {
     $port = request()->getHost();
 
-    // Lấy lịch sử giao dịch của đúng cái Host này
-    $transactions = DB::table('node_bookings')
-        ->where('node_port', $port)
-        ->orderBy('updated_at', 'desc')
-        ->take(10)
-        ->get();
+    // Lấy lịch sử giao dịch của node này
+    try {
+        $transactions = DB::table('node_bookings')
+            ->where('node_port', $port)
+            ->orderBy('updated_at', 'desc')
+            ->take(10)
+            ->get();
+    } catch (\Exception $e) {
+        $transactions = collect([]);
+    }
 
     // Lấy nhật ký 4PC của node này
-    $logs = DB::table('node_logs')
-        ->where('node_port', $port)
-        ->orderBy('created_at', 'desc')
-        ->take(30)
-        ->get()
-        ->reverse()
-        ->values();
+    try {
+        $logs = DB::table('node_logs')
+            ->where('node_port', $port)
+            ->orderBy('created_at', 'desc')
+            ->take(30)
+            ->get()
+            ->reverse()
+            ->values();
+    } catch (\Exception $e) {
+        $logs = collect([]);
+    }
 
     return view('welcome', compact('port', 'transactions', 'logs'));
 });
