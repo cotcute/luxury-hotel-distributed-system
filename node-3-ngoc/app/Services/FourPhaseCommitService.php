@@ -17,9 +17,9 @@ class FourPhaseCommitService
     ];
     private int $quorum  = 3;
     private int $timeout = 30;
-    private string $myUrl = '';
-
-    public function __construct() { $this->myUrl = rtrim(config('app.url'), '/'); }
+    public function __construct() { 
+        $this->myUrl = request()->getHost(); 
+    }
 
     public function executeTransaction(array $data): array
     {
@@ -96,5 +96,8 @@ class FourPhaseCommitService
         DB::table('node_bookings')->updateOrInsert(['transaction_id' => $txnId, 'node_port' => $this->myUrl], ['room_id' => $roomId, 'customer_name' => $customerName, 'status' => 'committed', 'created_at' => now(), 'updated_at' => now()]);
     }
 
-    private function getOtherNodes(): array { return array_filter($this->allNodes, fn($url) => rtrim($url, '/') !== $this->myUrl); }
+    private function getOtherNodes(): array
+    {
+        return array_filter($this->allNodes, fn($url) => !str_contains($url, $this->myUrl));
+    }
 }

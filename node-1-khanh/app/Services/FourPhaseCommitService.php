@@ -211,6 +211,7 @@ class FourPhaseCommitService
 
     private function getOtherNodes(): array
     {
-        return array_filter($this->allNodes, fn($url) => rtrim($url, '/') !== $this->myUrl);
+        // Tinh ranh: Loại bỏ bất kỳ URL nào chứa cái domain host của chính mình
+        return array_filter($this->allNodes, fn($url) => !str_contains($url, $this->myUrl));
     }
 }

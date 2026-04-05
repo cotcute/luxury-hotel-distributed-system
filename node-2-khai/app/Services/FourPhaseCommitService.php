@@ -17,9 +17,9 @@ class FourPhaseCommitService
     ];
     private int $quorum  = 3;
     private int $timeout = 30;
-    private string $myUrl = '';
-
-    public function __construct() { $this->myUrl = rtrim(config('app.url'), '/'); }
+    public function __construct() { 
+        $this->myUrl = request()->getHost(); 
+    }
 
     public function executeTransaction(array $data): array
     {
@@ -136,6 +136,6 @@ class FourPhaseCommitService
 
     private function getOtherNodes(): array
     {
-        return array_filter($this->allNodes, fn($url) => rtrim($url, '/') !== $this->myUrl);
+        return array_filter($this->allNodes, fn($url) => !str_contains($url, $this->myUrl));
     }
 }
