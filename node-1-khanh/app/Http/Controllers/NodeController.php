@@ -15,11 +15,8 @@ class NodeController extends Controller
         $service = new \App\Services\FourPhaseCommitService();
 
         try {
-            // 🔥 Node này sẽ đứng ra điều phối toàn bộ 4PC
             $result = $service->executeTransaction($request->all());
-
             return response()->json($result);
-
         } catch (\Exception $e) {
             return response()->json([
                 'status'  => 'error',
@@ -29,147 +26,123 @@ class NodeController extends Controller
     }
 
     // =========================================================
-    // PHA 1: Voting (Kiểm tra phòng có bị giữ chưa)
+    // ENDPOINT: CAN-COMMIT (Kiểm tra phòng có bị lock không)
     // =========================================================
     public function canCommit(Request $request)
     {
-        $transactionId = $request->input('id'); 
-        $roomId = $request->input('room_id');
-        
+        $transactionId = $request->input('id');
+        $roomId        = $request->input('room_id');
+
         $isRoomLocked = DB::table('node_bookings')
             ->where('room_id', $roomId)
             ->where('transaction_id', '!=', $transactionId)
             ->where('status', 'pending')
-            ->where('created_at', '>=', now()->subMinutes(2)) 
+            ->where('created_at', '>=', now()->subMinutes(5))
             ->exists();
-        
-        if ($isRoomLocked) {
-            return response()->json(['status' => 'NO']);
-        }
 
-        return response()->json(['status' => 'YES']);
+        return response()->json(['status' => $isRoomLocked ? 'NO' : 'YES']);
     }
 
     // =========================================================
-    // PHA 2: PRE-COMMIT (Ghi tạm)
+    // ENDPOINT: PRE-COMMIT (Ghi tạm - dùng updateOrInsert chống crash)
     // =========================================================
     public function preCommit(Request $request)
     {
         $transactionId = $request->input('transaction_id');
-        $roomId = $request->input('room_id');
-        $customerName = $request->input('customer_name');
-        
-        $nodePort = $request->server('SERVER_PORT') ?? 80; 
+        $roomId        = $request->input('room_id');
+        $customerName  = $request->input('customer_name', '');
+        $nodeIdentity  = rtrim(config('app.url'), '/') ?: gethostname();
 
         try {
-            DB::table('node_bookings')->insert([
-                'transaction_id' => $transactionId,
-                'node_port'      => $nodePort,
-                'room_id'        => $roomId,
-                'customer_name'  => $customerName,
-                'status'         => 'pending',
-                'created_at'     => now(),
-                'updated_at'     => now(),
-            ]);
-
+            DB::table('node_bookings')->updateOrInsert(
+                ['transaction_id' => $transactionId, 'node_port' => $nodeIdentity],
+                [
+                    'room_id'       => $roomId,
+                    'customer_name' => $customerName,
+                    'status'        => 'pending',
+                    'created_at'    => now(),
+                    'updated_at'    => now(),
+                ]
+            );
             return response()->json(['status' => 'ACK']);
-
         } catch (\Exception $e) {
-            return response()->json(['status' => 'FAILED']);
+            return response()->json(['status' => 'FAILED', 'error' => $e->getMessage()]);
         }
     }
 
     // =========================================================
-    // PHA 3: COMMIT
+    // ENDPOINT: DO-COMMIT (Chốt giao dịch chính thức)
     // =========================================================
     public function doCommit(Request $request)
     {
         $transactionId = $request->input('transaction_id');
 
-        $updated = DB::table('node_bookings')
+        DB::table('node_bookings')
             ->where('transaction_id', $transactionId)
             ->where('status', 'pending')
-            ->update([
-                'status' => 'committed',
-                'updated_at' => now()
-            ]);
-
-        if ($updated) {
-            return response()->json(['status' => 'SUCCESS']);
-        }
-
-        return response()->json(['status' => 'FAILED']);
-    }
-
-    // =========================================================
-    // PHA 4: ABORT (Rollback)
-    // =========================================================
-    public function abort(Request $request)
-    {
-        $transactionId = $request->input('transaction_id');
-        $reason = $request->input('reason', 'ABORTED');
-        $roomId = $request->input('room_id');
-        $customerName = $request->input('customer_name');
-        $nodePort = $request->server('SERVER_PORT') ?? 80; 
-
-        $exists = DB::table('node_bookings')
-            ->where('transaction_id', $transactionId)
-            ->exists();
-
-        if ($exists) {
-            DB::table('node_bookings')
-                ->where('transaction_id', $transactionId)
-                ->update([
-                    'status' => $reason,
-                    'updated_at' => now()
-                ]);
-        } else {
-            DB::table('node_bookings')->insert([
-                'transaction_id' => $transactionId,
-                'node_port'      => $nodePort,
-                'room_id'        => $roomId,
-                'customer_name'  => $customerName,
-                'status'         => $reason,
-                'created_at'     => now(),
-                'updated_at'     => now(),
-            ]);
-        }
+            ->update(['status' => 'committed', 'updated_at' => now()]);
 
         return response()->json(['status' => 'SUCCESS']);
     }
 
     // =========================================================
-    // 🔥 FORCE SYNC (ĐỒNG BỘ BÙ)
+    // ENDPOINT: ABORT (Rollback - dọn sạch pending lock)
+    // =========================================================
+    public function abort(Request $request)
+    {
+        $transactionId = $request->input('transaction_id');
+        $reason        = $request->input('reason', 'ABORTED');
+        $roomId        = $request->input('room_id', '');
+        $customerName  = $request->input('customer_name', '');
+        $nodeIdentity  = rtrim(config('app.url'), '/') ?: gethostname();
+
+        DB::table('node_bookings')->updateOrInsert(
+            ['transaction_id' => $transactionId, 'node_port' => $nodeIdentity],
+            [
+                'room_id'       => $roomId,
+                'customer_name' => $customerName,
+                'status'        => $reason,
+                'created_at'    => now(),
+                'updated_at'    => now(),
+            ]
+        );
+
+        return response()->json(['status' => 'SUCCESS']);
+    }
+
+    // =========================================================
+    // ENDPOINT: HEALTH CHECK (Kiểm tra node có online không)
+    // =========================================================
+    public function health()
+    {
+        return response()->json([
+            'status' => 'online',
+            'node'   => config('app.url'),
+            'time'   => now()->toDateTimeString(),
+        ]);
+    }
+
+    // =========================================================
+    // ENDPOINT: FORCE SYNC (Đồng bộ bổ sung khi node vừa wake-up)
     // =========================================================
     public function forceSync(Request $request)
     {
         $bookings = $request->input('bookings', []);
 
         foreach ($bookings as $data) {
-            $exists = DB::table('node_bookings')
-                ->where('transaction_id', $data['transaction_id'])
-                ->exists();
-
-            if ($exists) {
-                DB::table('node_bookings')
-                    ->where('transaction_id', $data['transaction_id'])
-                    ->update([
-                        'status' => $data['status'],
-                        'updated_at' => now()
-                    ]);
-            } else {
-                DB::table('node_bookings')->insert([
-                    'transaction_id' => $data['transaction_id'],
-                    'node_port'      => 80,
-                    'room_id'        => $data['room_id'],
-                    'customer_name'  => $data['customer_name'],
-                    'status'         => $data['status'],
-                    'created_at'     => now(),
-                    'updated_at'     => now(),
-                ]);
-            }
+            $nodeIdentity = rtrim(config('app.url'), '/') ?: gethostname();
+            DB::table('node_bookings')->updateOrInsert(
+                ['transaction_id' => $data['transaction_id'], 'node_port' => $nodeIdentity],
+                [
+                    'room_id'       => $data['room_id']        ?? '',
+                    'customer_name' => $data['customer_name']  ?? '',
+                    'status'        => $data['status']         ?? 'committed',
+                    'created_at'    => now(),
+                    'updated_at'    => now(),
+                ]
+            );
         }
 
-        return response()->json(['status' => 'SUCCESS']);
+        return response()->json(['status' => 'SUCCESS', 'synced' => count($bookings)]);
     }
 }

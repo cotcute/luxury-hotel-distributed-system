@@ -45,10 +45,8 @@ class RouteServiceProvider extends ServiceProvider
      */
     protected function configureRateLimiting()
     {
-        // API này là server-to-server (4PC protocol), không phải public user
-        // Cần giới hạn cao để xử lý 15+ requests/booking
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(1000)->by($request->ip());
+            return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
         });
     }
 }

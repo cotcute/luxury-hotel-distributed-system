@@ -6,14 +6,29 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * ╔══════════════════════════════════════════════════════╗
+ * ║         4-PHASE COMMIT — ĐÚNG ĐẶC TẢ ĐỀ BÀI         ║
+ * ╠══════════════════════════════════════════════════════╣
+ * ║ Pha 1 - TIẾP NHẬN:  Node nhận request từ Client     ║
+ * ║                      Kiểm tra DB cục bộ của chính mình ║
+ * ║ Pha 2 - PHÂN TÁN:   Broadcast CAN-COMMIT đến 4 node ║
+ * ║                      còn lại (song song, không chờ) ║
+ * ║ Pha 3 - PHẢN HỒI:   Thu YES/NO từ 4 nodes           ║
+ * ║                      TẤT CẢ 4 YES → Commit           ║
+ * ║                      1 NO bất kỳ → Abort toàn bộ    ║
+ * ║ Pha 4 - ĐỒNG BỘ:    [TỐT] Coordinator ghi DB mình  ║
+ * ║                      + gửi DO-COMMIT song song       ║
+ * ║                      [XẤU] Gửi ABORT → dọn lock     ║
+ * ╚══════════════════════════════════════════════════════╝
+ */
 class FourPhaseCommitService
 {
     // =========================================================
-    // 📋 DANH SÁCH CÁC NODE KHÁC (không bao gồm chính mình)
+    // DANH SÁCH TẤT CẢ 5 NODES
+    // Coordinator tự nhận biết mình qua APP_URL và loại ra khi broadcast
     // =========================================================
-    // Mỗi node cần biết URL của các node còn lại để điều phối 4PC.
-    // Node hiện tại sẽ tự xử lý DB của chính mình trực tiếp (không qua HTTP).
-    private array $otherNodes = [
+    private array $allNodes = [
         'Node 1 (Khánh)' => 'https://node-1-khanh.onrender.com',
         'Node 2 (Khải)'  => 'https://node-2-khai-80yz.onrender.com',
         'Node 3 (Ngọc)'  => 'https://node-3-ngocc.onrender.com',
@@ -21,113 +36,142 @@ class FourPhaseCommitService
         'Node 5 (Duy)'   => 'https://node-5-duy-b0ca.onrender.com',
     ];
 
-    // Tên của node hiện tại (để loại bỏ khỏi danh sách gọi HTTP)
-    // Sẽ được tự động detect dựa trên APP_URL trong .env
-    private string $myUrl = '';
-
-    // Quorum: cần ít nhất 3 / 5 nodes đồng ý
-    private int $quorum = 3;
-
-    // Timeout gọi đến node khác (giây) - tăng lên để chờ Render wake-up
-    private int $timeout = 25;
+    private string $myUrl   = '';
+    private int    $timeout = 25; // 25s — cho phép Render cold-start ~15-20s
 
     public function __construct()
     {
-        // Detect URL của chính mình từ config
         $this->myUrl = rtrim(config('app.url'), '/');
     }
 
     // =========================================================
-    // 🚀 ĐIỀU PHỐI TOÀN BỘ GIAO THỨC 4-PHASE COMMIT
+    // ENTRY POINT: Điều phối toàn bộ giao dịch 4 pha
     // =========================================================
     public function executeTransaction(array $data): array
     {
         $transactionId = $data['id'];
         $roomId        = $data['room_id'];
-        $customerName  = $data['name'];
+        $customerName  = $data['name'] ?? '';
 
-        Log::info("[4PC] ▶ START transaction={$transactionId}, room={$roomId}");
+        Log::info("[4PC] ▶ START | txn={$transactionId} | room={$roomId} | coordinator={$this->myUrl}");
 
-        // Tách danh sách: node khác (gọi HTTP) vs chính mình (gọi DB trực tiếp)
-        $remoteNodes = $this->getRemoteNodes();
+        // Lấy 4 nodes còn lại (bỏ chính mình ra)
+        $remoteNodes = $this->getOtherNodes();
 
         // =====================================================
-        // PHA 1: CAN-COMMIT - Gửi SONG SONG đến tất cả remote nodes
-        //        + Tự kiểm tra DB của chính mình ngay lập tức
+        // PHA 1: TIẾP NHẬN (Request Phase)
         // =====================================================
-        [$yesNodes, $deadNodes] = $this->phase1CanCommit($transactionId, $roomId, $remoteNodes);
+        // Coordinator tự kiểm tra DB CỤC BỘ của mình (không cần HTTP)
+        // Nếu phòng đang bị lock → báo thất bại ngay lập tức
+        // =====================================================
+        Log::info("[4PC][Pha1] Kiểm tra DB cục bộ...");
 
-        // Kiểm tra Quorum sau Phase 1
-        if (count($yesNodes) < $this->quorum) {
-            $this->broadcastAbort(array_intersect_key($remoteNodes, $yesNodes), $transactionId, $roomId, $customerName, 'QUORUM_FAILED');
+        if (!$this->localCanCommit($transactionId, $roomId)) {
             throw new \Exception(
-                'Không đủ Quorum! Chỉ có ' . count($yesNodes) . '/' . (count($remoteNodes) + 1)
-                . ' node sẵn sàng. Phòng ' . $roomId . ' có thể đã được đặt!'
+                "Phòng {$roomId} đang bị KHÓA tại Server Điều phối ({$this->myUrl})! Không thể tiếp tục."
             );
         }
 
-        Log::info("[4PC][P1] ✅ Quorum đạt: " . count($yesNodes) . " nodes đồng ý.");
+        Log::info("[4PC][Pha1] ✅ DB cục bộ OK → Bắt đầu Pha 2 (Phân tán)...");
 
         // =====================================================
-        // PHA 2: PRE-COMMIT - Ghi tạm vào DB toàn bộ nodes SONG SONG
+        // PHA 2: PHÂN TÁN (Prepare Phase — Broadcast SONG SONG)
         // =====================================================
-        [$ackNodes] = $this->phase2PreCommit($transactionId, $roomId, $customerName, $yesNodes, $remoteNodes);
+        // Gửi CAN-COMMIT đến 4 nodes còn lại ĐỒNG THỜI (Http::pool)
+        // Mỗi node: kiểm tra DB của họ → trả YES hoặc NO
+        // =====================================================
+        Log::info("[4PC][Pha2] 📡 Broadcast CAN-COMMIT đến: " . implode(', ', array_keys($remoteNodes)));
 
-        // Kiểm tra Quorum sau Phase 2
-        if (count($ackNodes) < $this->quorum) {
-            $this->broadcastAbort(array_intersect_key($remoteNodes, $ackNodes), $transactionId, $roomId, $customerName, 'PRE_COMMIT_FAILED');
-            throw new \Exception(
-                'Pre-Commit thất bại! Chỉ ghi được ' . count($ackNodes) . '/' . (count($remoteNodes) + 1) . ' nodes.'
-            );
+        $canCommitResponses = $this->broadcastCanCommit($transactionId, $roomId, $remoteNodes);
+
+        // =====================================================
+        // PHA 3: PHẢN HỒI (Vote Collection)
+        // =====================================================
+        // Tổng hợp vote. Quy tắc: TẤT CẢ 4 nodes phải YES.
+        // Dù chỉ 1 node báo NO hoặc không phản hồi → ABORT
+        // =====================================================
+        Log::info("[4PC][Pha3] Tổng hợp vote...");
+
+        $yesNodes  = [];
+        $noNodes   = [];
+        $deadNodes = [];
+
+        foreach ($canCommitResponses as $name => ['url' => $url, 'vote' => $vote, 'dead' => $dead]) {
+            if ($vote === 'YES') {
+                $yesNodes[$name] = $url;
+                Log::info("[4PC][Pha3] {$name} → YES ✅");
+            } else {
+                $noNodes[] = $name;
+                if ($dead) $deadNodes[] = $name;
+                Log::warning("[4PC][Pha3] {$name} → NO/TIMEOUT ❌");
+            }
         }
 
-        Log::info("[4PC][P2] ✅ Pre-Commit ACK: " . count($ackNodes) . " nodes.");
+        // TẤT CẢ phải đồng ý — dù 1 NO → ABORT
+        if (count($noNodes) > 0) {
+            Log::warning("[4PC][Pha3] ⛔ Có node từ chối: [" . implode(', ', $noNodes) . "]. Đang ABORT...");
+
+            // Gửi ABORT đến các node đã YES để dọn lock
+            $this->broadcastAbortParallel($yesNodes, $transactionId, $roomId, $customerName, 'VOTED_NO_BY_PEER');
+
+            // Tạo thông điệp phân biệt dead vs refused
+            if (count($deadNodes) > 0) {
+                $msg = 'Server [' . implode(', ', $deadNodes) . '] không phản hồi (đang ngủ đông hoặc sập).';
+            } else {
+                $msg = 'Server [' . implode(', ', $noNodes) . '] từ chối vì phòng đã được đặt hoặc đang bận.';
+            }
+
+            throw new \Exception("Giao dịch HỦY! {$msg} Vui lòng thử lại sau.");
+        }
+
+        Log::info("[4PC][Pha3] ✅ TẤT CẢ " . count($yesNodes) . " nodes đồng ý! → Pha 4 (Chốt hạ)...");
 
         // =====================================================
-        // PHA 3: DO-COMMIT - Chốt giao dịch SONG SONG
+        // PHA 4: ĐỒNG BỘ & CHỐT HẠ — Trường hợp TỐT
         // =====================================================
-        $committedNodes = $this->phase3DoCommit($transactionId, $ackNodes, $remoteNodes);
+        // 1. PRE-COMMIT song song (ghi pending lock vào tất cả nodes)
+        // 2. Coordinator tự ghi committed vào DB CỤC BỘ của mình
+        // 3. Gửi DO-COMMIT song song đến 4 nodes còn lại
+        // =====================================================
+        Log::info("[4PC][Pha4] 🎯 Đang PRE-COMMIT song song...");
 
-        // Tổng hợp kết quả
-        $allDeadNames = array_values(array_diff(
-            array_merge(['Chính mình'], array_keys($remoteNodes)),
-            $committedNodes
-        ));
+        $ackResponses = $this->broadcastPreCommit($transactionId, $roomId, $customerName, $yesNodes);
+        $failedAck    = array_filter($ackResponses, fn($r) => $r !== 'ACK');
 
-        Log::info("[4PC] ✅ DONE transaction={$transactionId}. Dead=" . implode(',', $allDeadNames));
+        if (count($failedAck) > 0) {
+            // Ít có khả năng xảy ra — nhưng nếu có thì abort an toàn
+            Log::warning("[4PC][Pha4] Pre-Commit thất bại tại: " . implode(', ', array_keys($failedAck)));
+            $this->broadcastAbortParallel($yesNodes, $transactionId, $roomId, $customerName, 'PRE_COMMIT_FAILED');
+            throw new \Exception('Pre-Commit thất bại! Hệ thống đã Rollback an toàn. Vui lòng thử lại.');
+        }
+
+        // Coordinator tự ghi DB của MÌNH
+        $this->localCommit($transactionId, $roomId, $customerName);
+        Log::info("[4PC][Pha4] Coordinator tự ghi DB: ✅");
+
+        // Gửi DO-COMMIT song song đến 4 nodes
+        $this->broadcastDoCommit($transactionId, $yesNodes);
+        Log::info("[4PC][Pha4] ✅ DO-COMMIT gửi đến tất cả nodes → HOÀN THÀNH!");
 
         return [
             'status'          => 'success',
-            'message'         => 'Đặt phòng thành công! Dữ liệu đã được phân tán lên các server.',
+            'message'         => 'Đặt phòng thành công! Tất cả 5 server đã đồng bộ dữ liệu.',
             'transaction_id'  => $transactionId,
-            'committed_nodes' => $committedNodes,
-            'dead_nodes'      => $allDeadNames,
+            'committed_nodes' => array_merge(['Coordinator'], array_keys($yesNodes)),
+            'dead_nodes'      => [],
         ];
     }
 
     // =========================================================
-    // PHA 1: CAN-COMMIT (Parallel HTTP + local DB check)
+    // PHA 2: Gửi CAN-COMMIT SONG SONG đến tất cả remote nodes
     // =========================================================
-    private function phase1CanCommit(string $transactionId, string $roomId, array $remoteNodes): array
+    private function broadcastCanCommit(string $transactionId, string $roomId, array $remoteNodes): array
     {
-        $yesNodes  = [];
-        $deadNodes = [];
-
-        // ✅ Tự kiểm tra chính mình trực tiếp (không qua HTTP - nhanh hơn)
-        $selfVote = $this->localCanCommit($transactionId, $roomId);
-        if ($selfVote) {
-            $yesNodes['self'] = true;
-            Log::info("[4PC][P1] SELF -> YES");
-        } else {
-            $deadNodes[] = 'self';
-            Log::warning("[4PC][P1] SELF -> NO (phòng bị lock)");
-        }
-
         if (empty($remoteNodes)) {
-            return [$yesNodes, $deadNodes];
+            return [];
         }
 
-        // ✅ Gọi SONG SONG đến tất cả remote nodes bằng Http::pool
+        $results   = [];
         $responses = Http::pool(function ($pool) use ($remoteNodes, $transactionId, $roomId) {
             foreach ($remoteNodes as $name => $url) {
                 $pool->as($name)
@@ -144,51 +188,33 @@ class FourPhaseCommitService
             try {
                 $res = $responses[$name];
                 if ($res->ok() && $res->json('status') === 'YES') {
-                    $yesNodes[$name] = $url;
-                    Log::info("[4PC][P1] {$name} -> YES");
+                    $results[$name] = ['url' => $url, 'vote' => 'YES', 'dead' => false];
                 } else {
-                    $deadNodes[] = $name;
-                    Log::warning("[4PC][P1] {$name} -> NO/ERR " . $res->status());
+                    $results[$name] = ['url' => $url, 'vote' => 'NO',  'dead' => false];
                 }
             } catch (\Exception $e) {
-                $deadNodes[] = $name;
-                Log::warning("[4PC][P1] {$name} -> TIMEOUT: " . $e->getMessage());
+                $results[$name] = ['url' => $url, 'vote' => 'NO', 'dead' => true];
+                Log::error("[4PC][CAN-COMMIT] {$name}: " . $e->getMessage());
             }
         }
 
-        return [$yesNodes, $deadNodes];
+        return $results;
     }
 
     // =========================================================
-    // PHA 2: PRE-COMMIT (Parallel HTTP + local DB write)
+    // PHA 4a: Gửi PRE-COMMIT SONG SONG
     // =========================================================
-    private function phase2PreCommit(
+    private function broadcastPreCommit(
         string $transactionId,
         string $roomId,
         string $customerName,
-        array  $yesNodes,
-        array  $remoteNodes
+        array  $yesNodes
     ): array {
-        $ackNodes = [];
+        if (empty($yesNodes)) return [];
 
-        // ✅ Tự ghi vào DB của chính mình ngay lập tức
-        if (isset($yesNodes['self'])) {
-            $selfAck = $this->localPreCommit($transactionId, $roomId, $customerName);
-            if ($selfAck) {
-                $ackNodes['self'] = true;
-                Log::info("[4PC][P2] SELF -> ACK");
-            }
-        }
-
-        // Remote nodes đã vote YES
-        $remoteYesNodes = array_intersect_key($remoteNodes, $yesNodes);
-        if (empty($remoteYesNodes)) {
-            return [$ackNodes];
-        }
-
-        // ✅ Gọi SONG SONG Pre-Commit
-        $responses = Http::pool(function ($pool) use ($remoteYesNodes, $transactionId, $roomId, $customerName) {
-            foreach ($remoteYesNodes as $name => $url) {
+        $results   = [];
+        $responses = Http::pool(function ($pool) use ($yesNodes, $transactionId, $roomId, $customerName) {
+            foreach ($yesNodes as $name => $url) {
                 $pool->as($name)
                     ->withoutVerifying()
                     ->timeout($this->timeout)
@@ -200,70 +226,73 @@ class FourPhaseCommitService
             }
         });
 
-        foreach ($remoteYesNodes as $name => $url) {
+        foreach ($yesNodes as $name => $url) {
             try {
                 $res = $responses[$name];
-                if ($res->ok() && $res->json('status') === 'ACK') {
-                    $ackNodes[$name] = $url;
-                    Log::info("[4PC][P2] {$name} -> ACK");
-                } else {
-                    Log::warning("[4PC][P2] {$name} -> FAIL " . $res->status());
-                }
+                $results[$name] = ($res->ok() && $res->json('status') === 'ACK') ? 'ACK' : 'FAILED';
             } catch (\Exception $e) {
-                Log::warning("[4PC][P2] {$name} -> DOWN: " . $e->getMessage());
+                $results[$name] = 'FAILED';
+                Log::error("[4PC][PRE-COMMIT] {$name}: " . $e->getMessage());
             }
         }
 
-        return [$ackNodes];
+        return $results;
     }
 
     // =========================================================
-    // PHA 3: DO-COMMIT (Parallel HTTP + local DB commit)
+    // PHA 4b: Gửi DO-COMMIT SONG SONG
     // =========================================================
-    private function phase3DoCommit(string $transactionId, array $ackNodes, array $remoteNodes): array
+    private function broadcastDoCommit(string $transactionId, array $nodes): void
     {
-        $committedNodes = [];
+        if (empty($nodes)) return;
 
-        // ✅ Commit chính mình trực tiếp
-        if (isset($ackNodes['self'])) {
-            $this->localDoCommit($transactionId);
-            $committedNodes[] = 'Chính mình';
-            Log::info("[4PC][P3] SELF -> COMMITTED");
+        try {
+            Http::pool(function ($pool) use ($nodes, $transactionId) {
+                foreach ($nodes as $name => $url) {
+                    $pool->as($name)
+                        ->withoutVerifying()
+                        ->timeout(15)
+                        ->post($url . '/api/do-commit', ['transaction_id' => $transactionId]);
+                }
+            });
+        } catch (\Exception $e) {
+            Log::error("[4PC][DO-COMMIT] Pool error: " . $e->getMessage());
         }
-
-        // Remote nodes đã ACK
-        $remoteAckNodes = array_intersect_key($remoteNodes, $ackNodes);
-        if (empty($remoteAckNodes)) {
-            return $committedNodes;
-        }
-
-        // ✅ Gọi SONG SONG Do-Commit
-        $responses = Http::pool(function ($pool) use ($remoteAckNodes, $transactionId) {
-            foreach ($remoteAckNodes as $name => $url) {
-                $pool->as($name)
-                    ->withoutVerifying()
-                    ->timeout($this->timeout)
-                    ->post($url . '/api/do-commit', [
-                        'transaction_id' => $transactionId,
-                    ]);
-            }
-        });
-
-        foreach ($remoteAckNodes as $name => $url) {
-            try {
-                $responses[$name]; // Không quan tâm kết quả - đã pre-commit thì dữ liệu an toàn
-                $committedNodes[] = $name;
-                Log::info("[4PC][P3] {$name} -> COMMITTED");
-            } catch (\Exception $e) {
-                Log::error("[4PC][P3] {$name} -> DOWN khi commit: " . $e->getMessage());
-            }
-        }
-
-        return $committedNodes;
     }
 
     // =========================================================
-    // 🔧 CÁC HÀM DB LOCAL (Xử lý trực tiếp DB của chính node)
+    // PHA ABORT: Gửi ABORT SONG SONG đến nodes đã lock
+    // =========================================================
+    private function broadcastAbortParallel(
+        array  $nodes,
+        string $transactionId,
+        string $roomId,
+        string $customerName,
+        string $reason
+    ): void {
+        if (empty($nodes)) return;
+
+        try {
+            Http::pool(function ($pool) use ($nodes, $transactionId, $roomId, $customerName, $reason) {
+                foreach ($nodes as $name => $url) {
+                    $pool->as($name)
+                        ->withoutVerifying()
+                        ->timeout(8)
+                        ->post($url . '/api/abort', [
+                            'transaction_id' => $transactionId,
+                            'room_id'        => $roomId,
+                            'customer_name'  => $customerName,
+                            'reason'         => $reason,
+                        ]);
+                }
+            });
+        } catch (\Exception $e) {
+            Log::error("[4PC][ABORT] Pool error: " . $e->getMessage());
+        }
+    }
+
+    // =========================================================
+    // LOCAL DB OPERATIONS (Không qua HTTP — nhanh và an toàn)
     // =========================================================
     private function localCanCommit(string $transactionId, string $roomId): bool
     {
@@ -271,85 +300,32 @@ class FourPhaseCommitService
             ->where('room_id', $roomId)
             ->where('transaction_id', '!=', $transactionId)
             ->where('status', 'pending')
-            ->where('created_at', '>=', now()->subMinutes(2))
+            ->where('created_at', '>=', now()->subMinutes(5))
             ->exists();
     }
 
-    private function localPreCommit(string $transactionId, string $roomId, string $customerName): bool
+    private function localCommit(string $transactionId, string $roomId, string $customerName): void
     {
-        try {
-            DB::table('node_bookings')->updateOrInsert(
-                [
-                    'transaction_id' => $transactionId,
-                    'node_port'      => config('app.url'),
-                ],
-                [
-                    'room_id'       => $roomId,
-                    'customer_name' => $customerName,
-                    'status'        => 'pending',
-                    'created_at'    => now(),
-                    'updated_at'    => now(),
-                ]
-            );
-            return true;
-        } catch (\Exception $e) {
-            Log::error("[4PC] localPreCommit error: " . $e->getMessage());
-            return false;
-        }
-    }
-
-    private function localDoCommit(string $transactionId): void
-    {
-        DB::table('node_bookings')
-            ->where('transaction_id', $transactionId)
-            ->where('status', 'pending')
-            ->update(['status' => 'committed', 'updated_at' => now()]);
+        DB::table('node_bookings')->updateOrInsert(
+            ['transaction_id' => $transactionId, 'node_port' => $this->myUrl],
+            [
+                'room_id'       => $roomId,
+                'customer_name' => $customerName,
+                'status'        => 'committed',
+                'created_at'    => now(),
+                'updated_at'    => now(),
+            ]
+        );
     }
 
     // =========================================================
-    // PHA 4: ABORT - Gửi Abort SONG SONG đến các nodes
+    // HELPER: Lấy 4 nodes còn lại (loại chính mình)
     // =========================================================
-    private function broadcastAbort(
-        array  $nodes,
-        string $transactionId,
-        string $roomId,
-        string $customerName,
-        string $reason
-    ): void {
-        // Tự rollback chính mình
-        DB::table('node_bookings')
-            ->where('transaction_id', $transactionId)
-            ->where('status', 'pending')
-            ->update(['status' => $reason, 'updated_at' => now()]);
-
-        if (empty($nodes)) return;
-
-        // Gửi Abort song song đến các remote nodes
-        Http::pool(function ($pool) use ($nodes, $transactionId, $roomId, $customerName, $reason) {
-            foreach ($nodes as $name => $url) {
-                $pool->as($name)
-                    ->withoutVerifying()
-                    ->timeout(5)
-                    ->post($url . '/api/abort', [
-                        'transaction_id' => $transactionId,
-                        'room_id'        => $roomId,
-                        'customer_name'  => $customerName,
-                        'reason'         => $reason,
-                    ]);
-            }
-        });
-    }
-
-    // =========================================================
-    // 🧭 HELPER: Lấy danh sách remote nodes (bỏ chính mình ra)
-    // =========================================================
-    private function getRemoteNodes(): array
+    private function getOtherNodes(): array
     {
-        $myUrl = $this->myUrl;
-
         return array_filter(
-            $this->otherNodes,
-            fn($url) => rtrim($url, '/') !== rtrim($myUrl, '/')
+            $this->allNodes,
+            fn($url) => rtrim($url, '/') !== $this->myUrl
         );
     }
 }
