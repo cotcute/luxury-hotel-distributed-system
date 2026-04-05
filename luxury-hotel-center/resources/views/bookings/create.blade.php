@@ -81,7 +81,7 @@
                             <select name="target_node" id="target_node"
                                 class="form-select border-danger shadow-sm fw-bold" required>
                                 <option value="">-- Click để chọn Server nhận lệnh --</option>
-                                <option value="https://node-1-khanh.onrender.com">Server Node 1 (Khánh)</option>
+                                <option value="https://luxury-hotel-distributed-system-49mq.onrender.com">Server Node 1 (Khánh)</option>
                                 <option value="https://node-2-khai-80yz.onrender.com">Server Node 2 (Khải)</option>
                                 <option value="https://node-3-ngocc.onrender.com">Server Node 3 (Ngọc)</option>
                                 <option value="https://node-kien.onrender.com">Server Node 4 (Kiên)</option>
