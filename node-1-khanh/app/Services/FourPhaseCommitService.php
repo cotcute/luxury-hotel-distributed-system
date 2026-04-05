@@ -100,13 +100,13 @@ class FourPhaseCommitService
 
         // ── PHA 4: ĐỒNG BỘ & CHỐT HẠ ────────────────────────────
         // Pre-commit song song vào các remote YES nodes
-        $ackNodes = $this->broadcastPreCommit($txnId, $roomId, $customerName, $yesNodes);
+        $this->broadcastPreCommit($txnId, $roomId, $customerName, $yesNodes);
 
         // Coordinator tự ghi DB
         $this->localCommit($txnId, $roomId, $customerName);
 
-        // Do-commit song song
-        $this->broadcastDoCommit($txnId, $ackNodes);
+        // DICTATOR MODE: Bỏ qua ackNodes, DỘI BOM trực tiếp vòng 2 tới TẤT CẢ các Node
+        $this->broadcastDoCommit($txnId, $yesNodes, $roomId, $customerName);
 
         Log::info("[4PC] DONE txn={$txnId}");
 
@@ -172,13 +172,17 @@ class FourPhaseCommitService
     }
 
     // ── DO-COMMIT ────────────────────────────────────────────────
-    private function broadcastDoCommit(string $txnId, array $nodes): void
+    private function broadcastDoCommit(string $txnId, array $nodes, string $roomId, string $cname): void
     {
         if (empty($nodes)) return;
         try {
             Http::pool(fn($pool) => array_map(
                 fn($n, $url) => $pool->as($n)->withoutVerifying()->timeout(15)
-                    ->post($url . '/api/do-commit', ['transaction_id' => $txnId]),
+                    ->post($url . '/api/do-commit', [
+                        'transaction_id' => $txnId,
+                        'room_id' => $roomId,
+                        'customer_name' => $cname
+                    ]),
                 array_keys($nodes), array_values($nodes)
             ));
         } catch (\Exception $e) { Log::error("[4PC][COMMIT] " . $e->getMessage()); }

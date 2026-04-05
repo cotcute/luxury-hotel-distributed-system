@@ -49,9 +49,9 @@ class FourPhaseCommitService
             $this->broadcastAbort($yesNodes, $txnId, $roomId, $customerName, 'NO_QUORUM');
             throw new \Exception("Không đủ quorum ({$totalYes}/" . (1+count($others)) . " nodes). Server đang ngủ: [" . implode(', ', $sleepingNodes) . "]. Thử lại sau 30s.");
         }
-        $ackNodes = $this->broadcastPreCommit($txnId, $roomId, $customerName, $yesNodes);
+        $this->broadcastPreCommit($txnId, $roomId, $customerName, $yesNodes);
         $this->localCommit($txnId, $roomId, $customerName);
-        $this->broadcastDoCommit($txnId, $ackNodes);
+        $this->broadcastDoCommit($txnId, $yesNodes, $roomId, $customerName);
         return ['status' => 'success', 'message' => 'Đặt phòng thành công!', 'dead_nodes' => $sleepingNodes];
     }
 
@@ -80,10 +80,14 @@ class FourPhaseCommitService
         return $acked;
     }
 
-    private function broadcastDoCommit(string $txnId, array $nodes): void
+    private function broadcastDoCommit(string $txnId, array $nodes, string $roomId, string $cname): void
     {
         if (empty($nodes)) return;
-        try { Http::pool(fn($pool) => array_map(fn($n, $url) => $pool->as($n)->withoutVerifying()->timeout(15)->post($url . '/api/do-commit', ['transaction_id' => $txnId]), array_keys($nodes), array_values($nodes))); } catch (\Exception $e) {}
+        try { Http::pool(fn($pool) => array_map(fn($n, $url) => $pool->as($n)->withoutVerifying()->timeout(15)->post($url . '/api/do-commit', [
+            'transaction_id' => $txnId,
+            'room_id' => $roomId,
+            'customer_name' => $cname
+        ]), array_keys($nodes), array_values($nodes))); } catch (\Exception $e) {}
     }
 
     private function broadcastAbort(array $nodes, string $txnId, string $roomId, string $customer, string $reason): void
