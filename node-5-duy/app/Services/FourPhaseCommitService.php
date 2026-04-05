@@ -1,119 +1,185 @@
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
-class NodeController extends Controller
+class FourPhaseCommitService
 {
-    // Giao tiếp với CLIENT: Đứng ra làm Nhạc trưởng
-    public function receiveFromClient(Request $request)
+    // =========================================================
+    // 📋 DANH SÁCH TẤT CẢ NODES TRONG HỆ THỐNG
+    // =========================================================
+    private array $allNodes = [
+        'Node 1 (Khánh)' => 'https://node-1-khanh.onrender.com',
+        'Node 2 (Khải)'  => 'https://node-2-khai-80yz.onrender.com',
+        'Node 3 (Ngọc)'  => 'https://node-3-ngocc.onrender.com',
+        'Node 4 (Kiên)'  => 'https://node-kien.onrender.com',
+        'Node 5 (Duy)'   => 'https://node-5-duy-b0ca.onrender.com',
+    ];
+
+    // URL Center Server để ghi lại booking sau khi thành công
+    private string $centerUrl = 'https://luxury-hotel-cente.onrender.com';
+
+    // Quorum: cần ít nhất 3 / 5 nodes đồng ý
+    private int $quorum = 3;
+
+    // Timeout cho từng request đến node (giây)
+    private int $timeout = 12;
+
+    // =========================================================
+    // 🚀 ĐIỀU PHỐI TOÀN BỘ GIAO THỨC 4-PHASE COMMIT
+    // =========================================================
+    public function executeTransaction(array $data): array
     {
-        $service = new \App\Services\FourPhaseCommitService();
-        try {
-            $result = $service->executeTransaction($request->all());
-            return response()->json($result);
-        } catch (\Exception $e) {
-            return response()->json([
-                'status' => 'error', 
-                'message' => $e->getMessage()
-            ], 400); 
+        $transactionId = $data['id'];
+        $roomId        = $data['room_id'];
+        $customerName  = $data['name'];
+
+        Log::info("[4PC] Bắt đầu transaction: {$transactionId}, phòng: {$roomId}");
+
+        // =====================================================
+        // PHA 1: CAN-COMMIT (Voting - Hỏi ý kiến toàn bộ nodes)
+        // =====================================================
+        $yesNodes  = []; // Nodes đồng ý
+        $deadNodes = []; // Nodes không phản hồi hoặc từ chối
+
+        foreach ($this->allNodes as $name => $url) {
+            try {
+                $response = Http::withoutVerifying()
+                    ->timeout($this->timeout)
+                    ->post($url . '/api/can-commit', [
+                        'id'      => $transactionId,
+                        'room_id' => $roomId,
+                    ]);
+
+                if ($response->ok() && $response->json('status') === 'YES') {
+                    $yesNodes[$name] = $url;
+                    Log::info("[4PC][Phase1] {$name} -> YES");
+                } else {
+                    $deadNodes[] = $name;
+                    Log::warning("[4PC][Phase1] {$name} -> NO/Error: " . $response->body());
+                }
+
+            } catch (\Exception $e) {
+                $deadNodes[] = $name;
+                Log::warning("[4PC][Phase1] {$name} -> TIMEOUT/DOWN: " . $e->getMessage());
+            }
         }
-    }
 
-    // LẤY DANH TÍNH CỦA MÁY (Tránh giẫm đạp DB chung)
-    private function getNodeIdentity(Request $request) {
-        return $request->getHost() ?? 'Unknown_Node';
-    }
-
-    // PHA 1: Voting (Kiểm tra phòng)
-    public function canCommit(Request $request)
-    {
-        $transactionId = $request->input('id'); 
-        $roomId = $request->input('room_id');
-        
-        $isRoomLocked = DB::table('node_bookings')
-            ->where('room_id', $roomId)
-            ->where('transaction_id', '!=', $transactionId)
-            ->where('status', 'pending')
-            ->where('created_at', '>=', now()->subMinutes(2)) 
-            ->exists();
-        
-        if ($isRoomLocked) {
-            return response()->json(['status' => 'NO']);
-        }
-
-        return response()->json(['status' => 'YES']);
-    }
-
-    // PHA 2: Chuẩn bị (Reserve) - VŨ KHÍ CHỐNG CRASH TẠI ĐÂY
-    public function preCommit(Request $request)
-    {
-        $transactionId = $request->input('transaction_id');
-        $roomId = $request->input('room_id');
-        $customerName = $request->input('customer_name');
-        $nodeIdentity = $this->getNodeIdentity($request);
-
-        try {
-            // DÙNG updateOrInsert: 5 máy cùng ập vào 1 DB cũng không bao giờ bị Crash SQL!
-            DB::table('node_bookings')->updateOrInsert(
-                [
-                    'transaction_id' => $transactionId,
-                    'node_port'      => $nodeIdentity // Định danh riêng biệt từng máy
-                ],
-                [
-                    'room_id'        => $roomId,
-                    'customer_name'  => $customerName,
-                    'status'         => 'pending',
-                    'created_at'     => now(),
-                    'updated_at'     => now(),
-                ]
+        // Kiểm tra Quorum sau Phase 1
+        if (count($yesNodes) < $this->quorum) {
+            $this->broadcastAbort($yesNodes, $transactionId, $roomId, $customerName, 'QUORUM_FAILED');
+            throw new \Exception(
+                'Không đủ Quorum! Chỉ có ' . count($yesNodes) . '/' . count($this->allNodes)
+                . ' node đồng ý. Phòng có thể đã được đặt hoặc hệ thống quá tải!'
             );
-            return response()->json(['status' => 'ACK']);
-        } catch (\Exception $e) {
-            return response()->json(['status' => 'FAILED', 'error' => $e->getMessage()]);
         }
-    }
 
-    // PHA 3: Chốt hạ (Commit)
-    public function doCommit(Request $request)
-    {
-        $transactionId = $request->input('transaction_id');
-        $nodeIdentity = $this->getNodeIdentity($request);
+        Log::info("[4PC][Phase1] Đạt Quorum: " . count($yesNodes) . "/" . count($this->allNodes) . " nodes đồng ý.");
 
-        $updated = DB::table('node_bookings')
-            ->where('transaction_id', $transactionId)
-            ->where('node_port', $nodeIdentity) // Chỉ Update dòng của chính mình
-            ->where('status', 'pending')
-            ->update(['status' => 'committed', 'updated_at' => now()]);
+        // =====================================================
+        // PHA 2: PRE-COMMIT (Ghi tạm vào DB - Chuẩn bị Commit)
+        // =====================================================
+        $ackNodes = []; // Nodes đã ghi tạm thành công
 
-        return response()->json(['status' => 'SUCCESS']);
-    }
+        foreach ($yesNodes as $name => $url) {
+            try {
+                $response = Http::withoutVerifying()
+                    ->timeout($this->timeout)
+                    ->post($url . '/api/pre-commit', [
+                        'transaction_id' => $transactionId,
+                        'room_id'        => $roomId,
+                        'customer_name'  => $customerName,
+                    ]);
 
-    // PHA 4: Hủy bỏ (Abort)
-    public function abort(Request $request)
-    {
-        $transactionId = $request->input('transaction_id');
-        $reason = $request->input('reason', 'ABORTED');
-        $roomId = $request->input('room_id');
-        $customerName = $request->input('customer_name');
-        $nodeIdentity = $this->getNodeIdentity($request);
+                if ($response->ok() && $response->json('status') === 'ACK') {
+                    $ackNodes[$name] = $url;
+                    Log::info("[4PC][Phase2] {$name} -> ACK");
+                } else {
+                    Log::warning("[4PC][Phase2] {$name} -> FAILED: " . $response->body());
+                }
 
-        // Chống Crash khi dọn rác
-        DB::table('node_bookings')->updateOrInsert(
-            [
-                'transaction_id' => $transactionId,
-                'node_port'      => $nodeIdentity
-            ],
-            [
-                'room_id'        => $roomId,
-                'customer_name'  => $customerName,
-                'status'         => $reason,
-                'updated_at'     => now(),
-            ]
+            } catch (\Exception $e) {
+                // Node chết sau khi vote YES - ghi log nhưng tiếp tục
+                Log::warning("[4PC][Phase2] {$name} -> DOWN sau vote: " . $e->getMessage());
+            }
+        }
+
+        // Kiểm tra Quorum sau Phase 2
+        if (count($ackNodes) < $this->quorum) {
+            $this->broadcastAbort($ackNodes, $transactionId, $roomId, $customerName, 'PRE_COMMIT_FAILED');
+            throw new \Exception(
+                'Pre-Commit thất bại! Không đủ ACK (' . count($ackNodes) . '/' . count($this->allNodes) . ').'
+            );
+        }
+
+        Log::info("[4PC][Phase2] Đạt Quorum ACK: " . count($ackNodes) . " nodes sẵn sàng commit.");
+
+        // =====================================================
+        // PHA 3: DO-COMMIT (Chốt giao dịch chính thức)
+        // =====================================================
+        $committedNodes = [];
+
+        foreach ($ackNodes as $name => $url) {
+            try {
+                $response = Http::withoutVerifying()
+                    ->timeout($this->timeout)
+                    ->post($url . '/api/do-commit', [
+                        'transaction_id' => $transactionId,
+                    ]);
+
+                $committedNodes[] = $name;
+                Log::info("[4PC][Phase3] {$name} -> COMMITTED");
+
+            } catch (\Exception $e) {
+                // Node tắt ngay lúc commit - dữ liệu vẫn an toàn ở phase 2
+                // Node sẽ tự recover và force-sync sau
+                Log::error("[4PC][Phase3] {$name} -> DOWN khi commit: " . $e->getMessage());
+            }
+        }
+
+        // Tính các node bị chết hoàn toàn (kể cả dead từ phase 1)
+        $allDeadNames = array_merge(
+            $deadNodes,
+            array_values(array_diff(array_keys($yesNodes), array_keys($ackNodes)))
         );
 
-        return response()->json(['status' => 'SUCCESS']);
+        Log::info("[4PC] ✅ HOÀN THÀNH! Transaction: {$transactionId}. Dead nodes: " . implode(', ', $allDeadNames));
+
+        return [
+            'status'          => 'success',
+            'message'         => 'Đặt phòng thành công! Dữ liệu đã được đồng bộ lên hệ thống phân tán.',
+            'transaction_id'  => $transactionId,
+            'committed_nodes' => $committedNodes,
+            'dead_nodes'      => $allDeadNames,
+        ];
+    }
+
+    // =========================================================
+    // PHA 4: ABORT (Rollback - Dọn dẹp khi thất bại)
+    // =========================================================
+    private function broadcastAbort(
+        array  $nodes,
+        string $transactionId,
+        string $roomId,
+        string $customerName,
+        string $reason
+    ): void {
+        foreach ($nodes as $name => $url) {
+            try {
+                Http::withoutVerifying()
+                    ->timeout(5)
+                    ->post($url . '/api/abort', [
+                        'transaction_id' => $transactionId,
+                        'room_id'        => $roomId,
+                        'customer_name'  => $customerName,
+                        'reason'         => $reason,
+                    ]);
+                Log::info("[4PC][Abort] {$name} -> ABORTED ({$reason})");
+            } catch (\Exception $e) {
+                Log::warning("[4PC][Abort] {$name} -> không thể abort: " . $e->getMessage());
+            }
+        }
     }
 }

@@ -66,21 +66,43 @@ class BookingController extends Controller
         ];
 
         try {
-            // 🚀 Gửi request với timeout 30s
+            // 🚀 Gửi request với timeout 60s (nodes cần thời gian wake-up trên Render)
             $response = Http::withoutVerifying()
-                ->timeout(30)
+                ->timeout(60)
                 ->post($targetNodeUrl . '/api/client-book', $bookingData);
 
             // ✅ SUCCESS
             if ($response->ok() && $response->json('status') === 'success') {
 
+                // 💾 Ghi lại booking vào DB của Center Server
+                $checkin  = Carbon::parse($request->input('checkin'));
+                $checkout = Carbon::parse($request->input('checkout'));
+                $nights   = max(1, $checkin->diffInDays($checkout));
+                $roomName = $request->input('room_name', 'N/A');
+                $price    = (float) $request->input('real_price', 0);
+
+                Booking::create([
+                    'user_id'     => Auth::id(),
+                    'room_id'     => $request->input('room_id'),
+                    'name'        => $request->input('name'),
+                    'email'       => $request->input('email'),
+                    'phone'       => $request->input('phone'),
+                    'nationality' => $request->input('country', 'VN'),
+                    'checkin'     => $checkin,
+                    'checkout'    => $checkout,
+                    'check_in'    => $checkin,
+                    'check_out'   => $checkout,
+                    'total_nights'=> $nights,
+                    'total_price' => $price * $nights,
+                    'status'      => 'confirmed',
+                    'note'        => 'Phòng: ' . $roomName . ' | Transaction: ' . $bookingData['id'],
+                ]);
+
                 $deadNodes = $response->json('dead_nodes', []);
 
                 if (count($deadNodes) > 0) {
                     $deadNames = implode(', ', $deadNodes);
-
-                    $warningMsg = "Đặt phòng thành công! Dù [ $deadNames ] đang tắt, hệ thống vẫn đạt đủ Quorum (Quá bán) và Commit dữ liệu an toàn lên các máy còn lại.";
-
+                    $warningMsg = "Đặt phòng thành công! Dù [ $deadNames ] đang tắt, hệ thống vẫn đạt đủ Quorum và Commit dữ liệu an toàn lên các máy còn lại.";
                     return redirect()->route('home')->with('success', $warningMsg);
                 }
 
@@ -90,24 +112,23 @@ class BookingController extends Controller
                 );
             }
 
-            // ❗ BẮT LỖI RENDER (HTML trả về thay vì JSON)
+            // ❗ BẮT LỖI RENDER (HTML trả về thay vì JSON - Node đang wake-up)
             if (strpos($response->header('Content-Type'), 'text/html') !== false) {
                 return back()->with(
                     'error',
-                    'Server bạn chọn đang ngủ đông hoặc quá tải. Vui lòng thử lại sau 15 giây hoặc chọn Server khác!'
+                    'Server Node đang khởi động lại (Render cold start). Vui lòng thử lại sau 20-30 giây hoặc chọn Server khác!'
                 )->withInput();
             }
 
             // ❌ LỖI LOGIC TỪ NODE
-            $errorMsg = $response->json('message') ?? 'Lỗi xử lý logic từ Server Node. Mã lỗi: ' . $response->status();
-
+            $errorMsg = $response->json('message') ?? 'Lỗi xử lý từ Server Node. Mã lỗi: ' . $response->status();
             return back()->with('error', $errorMsg)->withInput();
 
         } catch (\Exception $e) {
             // ❌ MẤT KẾT NỐI / TIMEOUT
             return back()->with(
                 'error',
-                'Sập mạng hoàn toàn: Server bạn chọn không thể kết nối!'
+                'Không thể kết nối đến Server Node! Render có thể đang wake-up (mất ~30s). Vui lòng thử lại!'
             )->withInput();
         }
     }
