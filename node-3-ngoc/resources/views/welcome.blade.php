@@ -10,14 +10,12 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <style>
         body {
-            background-color: #053551; /* Darker, modern background */
+            background-color: #053551;
             color: #e2e8f0;
             font-family: 'Inter', sans-serif;
         }
 
-        .font-mono {
-            font-family: 'Fira Code', monospace;
-        }
+        .font-mono { font-family: 'Fira Code', monospace; }
 
         .pulse-dot {
             box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
@@ -30,23 +28,52 @@
             100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
         }
 
-        /* Tùy chỉnh thanh cuộn cho bảng */
-        ::-webkit-scrollbar { height: 8px; width: 8px; }
-        ::-webkit-scrollbar-track { background: #1e293b; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        ::-webkit-scrollbar { height: 8px; width: 6px; }
+        ::-webkit-scrollbar-track { background: #0a2234; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #1e4a6e; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2a6696; }
+
+        /* LOG BOX */
+        .log-box {
+            background: #020c14;
+            border: 1px solid #0d3457;
+            border-radius: 8px;
+            font-family: 'Fira Code', monospace;
+            font-size: 12px;
+            height: 280px;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        .log-line {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 4px 0;
+            border-bottom: 1px solid rgba(13,52,87,0.5);
+            line-height: 1.5;
+        }
+        .log-time    { color: #2a6696; min-width: 70px; flex-shrink: 0; }
+        .log-icon    { min-width: 18px; flex-shrink: 0; }
+        .log-action  { font-weight: 600; min-width: 160px; flex-shrink: 0; color: #7ea8c9; }
+        .log-detail  { flex: 1; color: #a8c8e0; word-break: break-word; white-space: pre-wrap; }
+        .log-success .log-action { color: #4ade80; }
+        .log-success .log-detail { color: #bbf7d0; }
+        .log-warning .log-action { color: #fbbf24; }
+        .log-warning .log-detail { color: #fef3c7; }
+        .log-error   .log-action { color: #f87171; }
+        .log-error   .log-detail { color: #fecaca; }
+        .log-info    .log-action { color: #38bdf8; }
+        .log-info    .log-detail { color: #bae6fd; }
     </style>
 </head>
 
 <body class="p-4 md:p-8 min-h-screen flex flex-col">
     <div class="max-w-7xl mx-auto w-full flex-1 flex flex-col gap-6">
-        
+
         <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-5 border-b border-slate-800">
             <div>
                 <div class="flex items-center gap-3">
-            
                     <img src="{{ asset('khanh.jpg') }}" alt="Logo Luxury Hotel" class="w-12 h-12 object-contain rounded-lg">
-            
                     <div>
                         <h1 class="text-2xl font-bold text-white tracking-tight">LUXURY HOTEL</h1>
                         <p class="text-slate-400 text-sm mt-0.5">Distributed Cloud System Monitor</p>
@@ -58,7 +85,6 @@
                     <div class="bg-indigo-500/20 p-2 rounded-lg border border-indigo-500/30">
                         <svg class="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
-
                         </svg>
                     </div>
                     <div>
@@ -67,7 +93,6 @@
                     </div>
                 </div>
             </div>
-            
             <div class="flex items-center gap-3 bg-slate-800/50 px-4 py-2 rounded-lg border border-slate-700/50">
                 <span class="relative flex h-3 w-3">
                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
@@ -123,7 +148,7 @@
                     Tự động làm mới 2s
                 </span>
             </div>
-            
+
             <div class="overflow-x-auto flex-1">
                 <table class="w-full text-left text-sm whitespace-nowrap">
                     <thead class="bg-slate-900/50 text-slate-400 border-b border-slate-700/50">
@@ -158,18 +183,15 @@
                             <td class="px-6 py-4">
                                 @if($tx->status == 'committed')
                                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                                        <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>
-                                        COMMITTED
+                                        <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span> COMMITTED
                                     </span>
                                 @elseif($tx->status == 'pending')
                                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                                        PENDING
+                                        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> PENDING
                                     </span>
                                 @else
                                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">
-                                        <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
-                                        {{ strtoupper($tx->status) }}
+                                        <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span> {{ strtoupper($tx->status) }}
                                     </span>
                                 @endif
                             </td>
@@ -193,6 +215,42 @@
                 </table>
             </div>
         </div>
+
+        {{-- ===== Ô NHẬT KÝ GIAO THỨC 4PC ===== --}}
+        <div class="bg-slate-800/40 border border-slate-700/50 rounded-xl overflow-hidden shadow-xl">
+            <div class="px-6 py-4 border-b border-slate-700/50 bg-slate-800/20 flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+                    <span>📋</span> Nhật Ký Giao Thức 4-Phase Commit
+                </h2>
+                <span class="text-xs text-slate-400 bg-slate-800 border border-slate-700 px-3 py-1 rounded-full">{{ count($logs) }} sự kiện</span>
+            </div>
+            <div class="p-4">
+                <div class="log-box" id="logBox">
+                    @forelse($logs as $log)
+                    @php
+                        $icons = ['success' => '✅', 'warning' => '⚠️', 'error' => '❌', 'info' => 'ℹ️'];
+                        $icon  = $icons[$log->status] ?? 'ℹ️';
+                    @endphp
+                    <div class="log-line log-{{ $log->status }}">
+                        <span class="log-time">[{{ \Carbon\Carbon::parse($log->created_at)->format('H:i:s') }}]</span>
+                        <span class="log-icon">{{ $icon }}</span>
+                        <span class="log-action">{{ $log->action }}</span>
+                        <span class="log-detail">{{ $log->details }}</span>
+                    </div>
+                    @empty
+                    <div class="text-slate-600 italic text-center py-8">
+                        📡 Chưa có nhật ký. Node đang chờ giao dịch đầu tiên...
+                    </div>
+                    @endforelse
+                </div>
+            </div>
+        </div>
     </div>
+
+    <script>
+        const logBox = document.getElementById('logBox');
+        if (logBox) logBox.scrollTop = logBox.scrollHeight;
+    </script>
 </body>
+
 </html>

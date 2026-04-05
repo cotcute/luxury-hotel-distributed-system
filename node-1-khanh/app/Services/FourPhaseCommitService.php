@@ -33,7 +33,7 @@ class FourPhaseCommitService
 
     public function __construct()
     {
-        $this->myUrl = rtrim(config('app.url'), '/');
+        $this->myUrl = request()->getHost();
     }
 
     public function executeTransaction(array $data): array
@@ -45,50 +45,70 @@ class FourPhaseCommitService
         Log::info("[4PC] START txn={$txnId} room={$roomId} coordinator={$this->myUrl}");
 
         // ── PHA 1: TIẾP NHẬN ─────────────────────────────────────
+        $this->logSystem($txnId, 'BẮT ĐẦU 4PC', "Nhạc trưởng [{$this->myUrl}] khởi động giao dịch #{$txnId} cho Phòng {$roomId}, khách '{$customerName}'", 'warning');
+
         // Coordinator kiểm tra DB CỤC BỘ (không cần HTTP)
         if (!$this->localCanCommit($txnId, $roomId)) {
+            $this->logSystem($txnId, 'PHA 1: TỪ CHỐI', "Coordinator kiểm tra DB cục bộ → Phòng {$roomId} đang BỊ KHÓA!", 'error');
             throw new \Exception("Phòng {$roomId} đang bị khóa tại Server điều phối. Vui lòng thử phòng khác.");
         }
+        $this->logSystem($txnId, 'PHA 1: KIỂM TRA LOCAL', "Coordinator kiểm tra DB cục bộ → OK, Phòng {$roomId} chưa bị khóa", 'success');
         Log::info("[4PC][Pha1] Local OK");
 
         // ── PHA 2: PHÂN TÁN ──────────────────────────────────────
         // Broadcast CAN-COMMIT song song đến 4 nodes còn lại
         $others = $this->getOtherNodes();
+        $nodeNames = implode(', ', array_keys($others));
+        $this->logSystem($txnId, 'PHA 2: PHÂN TÁN', "Gửi CAN-COMMIT song song tới " . count($others) . " node: [{$nodeNames}]", 'info');
         Log::info("[4PC][Pha2] Broadcast đến: " . implode(', ', array_keys($others)));
 
         $votes = $this->broadcastCanCommit($txnId, $roomId, $others);
 
-        // ── PHA 3: PHẢN HỒI ──────────────────────────────────────
-        // Phân loại: YES | NO (chủ động từ chối) | SLEEPING (HTML/timeout)
+        // ── PHA 2: PHÂN LOẠI PHIẾU ───────────────────────────────
         $yesNodes      = []; // node online + đồng ý
         $noNodes       = []; // node online + chủ động từ chối (phòng bị lock)
         $sleepingNodes = []; // node không phản hồi (Render sleeping)
 
         foreach ($votes as $name => ['url' => $url, 'vote' => $vote]) {
-            if ($vote === 'YES')      { $yesNodes[$name] = $url; }
-            elseif ($vote === 'NO')   { 
-                // CHẾ ĐỘ ĐỘC TÀI: Dù Node báo kẹt phòng (NO), 
+            if ($vote === 'YES')    { $yesNodes[$name] = $url; }
+            elseif ($vote === 'NO') {
+                // CHẾ ĐỘ ĐỘC TÀI: Dù Node báo kẹt phòng (NO),
                 // ÉP nó thành YES để đè dữ liệu đồng bộ theo lệnh của Nhạc trưởng!
-                $yesNodes[$name] = $url; 
+                $yesNodes[$name] = $url;
+                $noNodes[]       = $name;
                 Log::warning("[4PC][DICTATOR] Ép {$name} buộc phải đồng ý dù nó vote NO.");
             }
-            else { 
+            else {
                 // CHẾ ĐỘ ĐỘC TÀI: Node đang ngủ (SLEEPING) cũng bị lôi dậy ÉP nhận data!
                 $yesNodes[$name] = $url;
-                $sleepingNodes[] = $name; 
+                $sleepingNodes[] = $name;
             }
             Log::info("[4PC][Pha3] {$name} → {$vote}");
         }
 
-        // BỎ LUẬT CHẶT CHẼ TRƯỚC ĐÂY: Dù có node báo NO (phòng bị lock),
-        // nhưng nếu hệ thống VẪN ĐẠT ĐỦ QUORUM thì BỎ QUA node lỗi và chốt luôn.
+        // Tổng hợp kết quả phiếu bầu
+        $voteDetails = [];
+        foreach ($votes as $name => ['vote' => $vote]) {
+            $icon = $vote === 'YES' ? '✅' : ($vote === 'NO' ? '⛔' : '💤');
+            $voteDetails[] = "{$icon} {$name}: {$vote}";
+        }
+        $onlineCount = count($others) - count($sleepingNodes);
+        $this->logSystem(
+            $txnId,
+            'PHA 2: KẾT QUẢ PHIẾU',
+            implode(' | ', $voteDetails) . " | Online: {$onlineCount}/" . count($others) . " | Sleeping: [" . implode(', ', $sleepingNodes) . "]",
+            empty($noNodes) ? 'success' : 'warning'
+        );
+
         if (count($noNodes) > 0) {
             Log::warning("[4PC] Các node sau từ chối nhưng sẽ bị bỏ qua nếu đủ Quorum: " . implode(', ', $noNodes));
+            $this->logSystem($txnId, 'CHẾ ĐỘ ĐỘC TÀI', "Buộc các node báo NO phải tuân lệnh: [" . implode(', ', $noNodes) . "]", 'warning');
         }
 
         // Kiểm tra Quorum: coordinator(YES) + remote YES >= quorum
         $totalYes = 1 + count($yesNodes); // 1 = coordinator chính mình
         if ($totalYes < $this->quorum) {
+            $this->logSystem($txnId, 'THIẾU QUORUM', "Không đủ quorum ({$totalYes}/" . (1 + count($others)) . "). ABORT!", 'error');
             $this->broadcastAbort($yesNodes, $txnId, $roomId, $customerName, 'NO_QUORUM');
             throw new \Exception(
                 "Không đủ quorum ({$totalYes}/" . (1 + count($others)) . " nodes online). " .
@@ -98,16 +118,20 @@ class FourPhaseCommitService
 
         Log::info("[4PC][Pha3] Quorum OK ({$totalYes}/" . (1 + count($others)) . "). Sleeping: " . implode(',', $sleepingNodes));
 
-        // ── PHA 4: ĐỒNG BỘ & CHỐT HẠ ────────────────────────────
-        // Pre-commit song song vào các remote YES nodes
+        // ── PHA 3: KHÓA TOÀN MẠNG ────────────────────────────────
+        $this->logSystem($txnId, 'PHA 3: KHÓA TOÀN MẠNG', "Đạt Quorum! Ra lệnh PRE-COMMIT tới " . count($yesNodes) . " node đang online: [" . implode(', ', array_keys($yesNodes)) . "]", 'info');
         $this->broadcastPreCommit($txnId, $roomId, $customerName, $yesNodes);
 
+        // ── PHA 4: COMMIT ─────────────────────────────────────────
         // Coordinator tự ghi DB
+        $this->logSystem($txnId, 'PHA 4: GHI LOCAL', "Coordinator [{$this->myUrl}] tự ghi vĩnh viễn vào CSDL của mình", 'success');
         $this->localCommit($txnId, $roomId, $customerName);
 
-        // DICTATOR MODE: Bỏ qua ackNodes, DỘI BOM trực tiếp vòng 2 tới TẤT CẢ các Node
+        // DICTATOR MODE: Dội bom Do-Commit tới TẤT CẢ các Node
+        $this->logSystem($txnId, 'PHA 4: ĐỒNG BỘ TOÀN MẠNG', "Broadcast DO-COMMIT tới " . count($yesNodes) . " node: [" . implode(', ', array_keys($yesNodes)) . "] — Đồng bộ hoàn tất!", 'success');
         $this->broadcastDoCommit($txnId, $yesNodes, $roomId, $customerName);
 
+        $this->logSystem($txnId, 'HOÀN TẤT', "✅ Giao dịch #{$txnId} thành công! Phòng {$roomId} đã đặt cho '{$customerName}'. Sleeping nodes: [" . implode(', ', $sleepingNodes) . "]", 'success');
         Log::info("[4PC] DONE txn={$txnId}");
 
         return [
@@ -222,7 +246,25 @@ class FourPhaseCommitService
 
     private function getOtherNodes(): array
     {
-        // Tinh ranh: Loại bỏ bất kỳ URL nào chứa cái domain host của chính mình
+        // Loại bỏ bất kỳ URL nào chứa hostname của chính mình
         return array_filter($this->allNodes, fn($url) => !str_contains($url, $this->myUrl));
+    }
+
+    // ── HELPER: GHI NHẬT KÝ ─────────────────────────────────────
+    private function logSystem($txnId, string $action, string $details, string $status = 'info'): void
+    {
+        try {
+            DB::table('node_logs')->insert([
+                'node_port'      => request()->getHost(),
+                'transaction_id' => (string) $txnId,
+                'action'         => $action,
+                'details'        => $details,
+                'status'         => $status,
+                'created_at'     => now(),
+                'updated_at'     => now(),
+            ]);
+        } catch (\Exception $e) {
+            // Không để lỗi ghi log làm hỏng logic chính
+        }
     }
 }

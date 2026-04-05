@@ -26,12 +26,14 @@ class NodeController extends Controller
     }
 
     // =========================================================
-    // ENDPOINT: CAN-COMMIT (Kiểm tra phòng có bị lock không)
+    // ENDPOINT: CAN-COMMIT (Pha 1 - Kiểm tra phòng có bị lock không)
     // =========================================================
     public function canCommit(Request $request)
     {
-        $transactionId = $request->input('id');
+        $rawId         = $request->input('id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
         $roomId        = $request->input('room_id');
+        $coordinator   = $request->input('coordinator', 'Coordinator');
 
         $isRoomLocked = DB::table('node_bookings')
             ->where('room_id', $roomId)
@@ -41,19 +43,27 @@ class NodeController extends Controller
             ->exists();
 
         $vote = $isRoomLocked ? 'NO' : 'YES';
-        $this->logSystem($transactionId, "PHA 1: TRƯNG CẦU", "Phản hồi Can-Commit: VOTE " . $vote . " (Phòng $roomId)", $vote === 'YES' ? 'success' : 'warning');
+
+        $this->logSystem(
+            $transactionId,
+            'PHA 1: TRƯNG CẦU',
+            "Nhận CAN-COMMIT từ Coordinator → VOTE {$vote} cho Phòng {$roomId}",
+            $vote === 'YES' ? 'success' : 'warning'
+        );
+
         return response()->json(['status' => $vote]);
     }
 
     // =========================================================
-    // ENDPOINT: PRE-COMMIT (Ghi tạm - dùng updateOrInsert chống crash)
+    // ENDPOINT: PRE-COMMIT (Pha 3 - Ghi tạm, chờ hiệu lệnh)
     // =========================================================
     public function preCommit(Request $request)
     {
-        $transactionId = $request->input('transaction_id');
+        $rawId         = $request->input('transaction_id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
         $roomId        = $request->input('room_id');
         $customerName  = $request->input('customer_name', '');
-        $nodeIdentity  = rtrim(config('app.url'), '/') ?: gethostname();
+        $nodeIdentity  = request()->getHost();
 
         try {
             DB::table('node_bookings')->updateOrInsert(
@@ -66,37 +76,73 @@ class NodeController extends Controller
                     'updated_at'    => now(),
                 ]
             );
+
+            $this->logSystem(
+                $transactionId,
+                'PHA 3: KHÓA TẠM',
+                "Nhận PRE-COMMIT từ Coordinator → Đã khóa tạm DB, Phòng {$roomId} cho '{$customerName}', chờ hiệu lệnh chốt",
+                'info'
+            );
+
             return response()->json(['status' => 'ACK']);
         } catch (\Exception $e) {
+            $this->logSystem($transactionId, 'PHA 3: LỖI', 'Pre-Commit thất bại: ' . $e->getMessage(), 'error');
             return response()->json(['status' => 'FAILED', 'error' => $e->getMessage()]);
         }
     }
 
     // =========================================================
-    // ENDPOINT: DO-COMMIT (Chốt giao dịch chính thức)
+    // ENDPOINT: DO-COMMIT (Pha 4 - Chốt giao dịch chính thức)
     // =========================================================
     public function doCommit(Request $request)
     {
-        $transactionId = $request->input('transaction_id');
+        $rawId         = $request->input('transaction_id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
+        $roomId        = $request->input('room_id');
+        $customerName  = $request->input('customer_name', '');
+        $port          = request()->getHost();
 
-        DB::table('node_bookings')
-            ->where('transaction_id', $transactionId)
-            ->where('status', 'pending')
-            ->update(['status' => 'committed', 'updated_at' => now()]);
+        $exists = DB::table('node_bookings')->where('transaction_id', $transactionId)->exists();
+        if ($exists) {
+            DB::table('node_bookings')->where('transaction_id', $transactionId)->update([
+                'status'        => 'committed',
+                'room_id'       => $roomId,
+                'customer_name' => $customerName,
+                'updated_at'    => now(),
+            ]);
+        } else {
+            DB::table('node_bookings')->insert([
+                'transaction_id' => $transactionId,
+                'node_port'      => $port,
+                'room_id'        => $roomId,
+                'customer_name'  => $customerName,
+                'status'         => 'committed',
+                'created_at'     => now(),
+                'updated_at'     => now(),
+            ]);
+        }
+
+        $this->logSystem(
+            $transactionId,
+            'PHA 4: CHỐT CỨNG',
+            "Nhận DO-COMMIT từ Coordinator → Ghi vĩnh viễn Phòng {$roomId} cho '{$customerName}' vào CSDL ✅",
+            'success'
+        );
 
         return response()->json(['status' => 'SUCCESS']);
     }
 
     // =========================================================
-    // ENDPOINT: ABORT (Rollback - dọn sạch pending lock)
+    // ENDPOINT: ABORT (Hủy bỏ giao dịch)
     // =========================================================
     public function abort(Request $request)
     {
-        $transactionId = $request->input('transaction_id');
+        $rawId         = $request->input('transaction_id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
         $reason        = $request->input('reason', 'ABORTED');
         $roomId        = $request->input('room_id', '');
         $customerName  = $request->input('customer_name', '');
-        $nodeIdentity  = rtrim(config('app.url'), '/') ?: gethostname();
+        $nodeIdentity  = request()->getHost();
 
         DB::table('node_bookings')->updateOrInsert(
             ['transaction_id' => $transactionId, 'node_port' => $nodeIdentity],
@@ -109,11 +155,18 @@ class NodeController extends Controller
             ]
         );
 
+        $this->logSystem(
+            $transactionId,
+            'HỦY LỆNH',
+            "Nhận ABORT từ Coordinator → Rollback Phòng {$roomId}. Lý do: {$reason}",
+            'error'
+        );
+
         return response()->json(['status' => 'SUCCESS']);
     }
 
     // =========================================================
-    // ENDPOINT: HEALTH CHECK (Kiểm tra node có online không)
+    // ENDPOINT: HEALTH CHECK
     // =========================================================
     public function health()
     {
@@ -132,19 +185,48 @@ class NodeController extends Controller
         $bookings = $request->input('bookings', []);
 
         foreach ($bookings as $data) {
-            $nodeIdentity = rtrim(config('app.url'), '/') ?: gethostname();
+            $nodeIdentity = request()->getHost();
             DB::table('node_bookings')->updateOrInsert(
                 ['transaction_id' => $data['transaction_id'], 'node_port' => $nodeIdentity],
                 [
-                    'room_id'       => $data['room_id']        ?? '',
-                    'customer_name' => $data['customer_name']  ?? '',
-                    'status'        => $data['status']         ?? 'committed',
+                    'room_id'       => $data['room_id']       ?? '',
+                    'customer_name' => $data['customer_name'] ?? '',
+                    'status'        => $data['status']        ?? 'committed',
                     'created_at'    => now(),
                     'updated_at'    => now(),
                 ]
             );
         }
 
+        if (count($bookings) > 0) {
+            $this->logSystem(
+                'SYNC',
+                'ĐỒNG BỘ BÙ',
+                'Node vừa thức dậy → Nhận ' . count($bookings) . ' giao dịch đồng bộ bù từ Coordinator',
+                'info'
+            );
+        }
+
         return response()->json(['status' => 'SUCCESS', 'synced' => count($bookings)]);
+    }
+
+    // =========================================================
+    // HELPER: GHI NHẬT KÝ VÀO BẢNG node_logs
+    // =========================================================
+    private function logSystem($txnId, string $action, string $details, string $status = 'info'): void
+    {
+        try {
+            DB::table('node_logs')->insert([
+                'node_port'      => request()->getHost(),
+                'transaction_id' => (string) $txnId,
+                'action'         => $action,
+                'details'        => $details,
+                'status'         => $status,
+                'created_at'     => now(),
+                'updated_at'     => now(),
+            ]);
+        } catch (\Exception $e) {
+            // Không để lỗi ghi log làm hỏng logic chính
+        }
     }
 }
