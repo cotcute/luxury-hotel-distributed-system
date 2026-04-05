@@ -40,7 +40,9 @@ class NodeController extends Controller
             ->where('created_at', '>=', now()->subMinutes(5))
             ->exists();
 
-        return response()->json(['status' => $isRoomLocked ? 'NO' : 'YES']);
+        $vote = $isRoomLocked ? 'NO' : 'YES';
+        $this->logSystem($transactionId, "PHA 1: TRƯNG CẦU", "Phản hồi Can-Commit: VOTE " . $vote . " (Phòng $roomId)", $vote === 'YES' ? 'success' : 'warning');
+        return response()->json(['status' => $vote]);
     }
 
     // =========================================================

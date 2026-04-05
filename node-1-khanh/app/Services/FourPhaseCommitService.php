@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Log;
 class FourPhaseCommitService
 {
     private array $allNodes = [
-        'Node 1 (Khánh)' => 'https://luxury-hotel-distributed-system-49mq.onrender.com',
+        'Node 1 (Khánh)' => 'https://node-1-khanh.onrender.com',
         'Node 2 (Khải)'  => 'https://node-2-khai-80yz.onrender.com',
         'Node 3 (Ngọc)'  => 'https://node-3-ngocc.onrender.com',
         'Node 4 (Kiên)'  => 'https://node-kien.onrender.com',
