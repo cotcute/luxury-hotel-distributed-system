@@ -72,7 +72,11 @@ class FourPhaseCommitService
                 $yesNodes[$name] = $url; 
                 Log::warning("[4PC][DICTATOR] Ép {$name} buộc phải đồng ý dù nó vote NO.");
             }
-            else                      { $sleepingNodes[] = $name; } // SLEEPING
+            else { 
+                // CHẾ ĐỘ ĐỘC TÀI: Node đang ngủ (SLEEPING) cũng bị lôi dậy ÉP nhận data!
+                $yesNodes[$name] = $url;
+                $sleepingNodes[] = $name; 
+            }
             Log::info("[4PC][Pha3] {$name} → {$vote}");
         }
 

@@ -45,7 +45,10 @@ class FourPhaseCommitService
                 // CHẾ ĐỘ ĐỘC TÀI: Ép Node báo NO phải nhận lệnh (Gán bằng YES)
                 $yesNodes[$name] = $url; 
             }
-            else $sleepingNodes[] = $name;
+            else { 
+                $yesNodes[$name] = $url;
+                $sleepingNodes[] = $name; 
+            }
         }
 
         // BỎ LUẬT CHẶT CHẼ TRƯỚC ĐÂY: Dù có node báo NO, bỏ qua nếu đủ Quorum.
