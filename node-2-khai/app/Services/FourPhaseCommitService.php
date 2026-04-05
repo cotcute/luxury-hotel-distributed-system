@@ -23,7 +23,10 @@ class FourPhaseCommitService
 
     public function executeTransaction(array $data): array
     {
-        $txnId = $data['id']; $roomId = $data['room_id']; $customerName = $data['name'] ?? '';
+        $txnId = $data['id']; 
+        $roomId = $data['room_id']; 
+        $customerName = $data['name'] ?? '';
+        
         Log::info("[4PC] START txn={$txnId} room={$roomId} coordinator={$this->myUrl}");
         $others = $this->getOtherNodes();
 
@@ -71,11 +74,19 @@ class FourPhaseCommitService
         $results = [];
         foreach ($nodes as $name => $url) {
             try {
-                $res = $responses[$name]; $ct = $res->header('Content-Type') ?? '';
+                $res = $responses[$name]; 
+                
+                // CỨU CÁNH: Kiểm tra lỗi Time-out từ mạng
+                if ($res instanceof \Exception) throw $res;
+                
+                $ct = $res->header('Content-Type') ?? '';
                 if (str_contains($ct, 'text/html')) $results[$name] = ['url' => $url, 'vote' => 'SLEEPING'];
                 elseif ($res->ok() && $res->json('status') === 'YES') $results[$name] = ['url' => $url, 'vote' => 'YES'];
                 else $results[$name] = ['url' => $url, 'vote' => 'NO'];
-            } catch (\Exception $e) { $results[$name] = ['url' => $url, 'vote' => 'SLEEPING']; }
+                
+            } catch (\Exception $e) { 
+                $results[$name] = ['url' => $url, 'vote' => 'SLEEPING']; 
+            }
         }
         return $results;
     }
@@ -89,7 +100,12 @@ class FourPhaseCommitService
             array_keys($yesNodes), array_values($yesNodes)
         ));
         foreach ($yesNodes as $n => $url) {
-            try { if ($responses[$n]->ok() && $responses[$n]->json('status') === 'ACK') $acked[$n] = $url; } catch (\Exception $e) {}
+            try { 
+                $res = $responses[$n];
+                // CỨU CÁNH
+                if ($res instanceof \Exception) throw $res;
+                if ($res->ok() && $res->json('status') === 'ACK') $acked[$n] = $url; 
+            } catch (\Exception $e) {}
         }
         return $acked;
     }
