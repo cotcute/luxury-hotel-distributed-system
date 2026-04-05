@@ -20,7 +20,8 @@ class NodeController extends Controller
 
     public function canCommit(Request $request)
     {
-        $transactionId = $request->input('id');
+        $rawId = $request->input('id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
         $roomId        = $request->input('room_id');
         $isRoomLocked  = DB::table('node_bookings')
             ->where('room_id', $roomId)
@@ -33,7 +34,8 @@ class NodeController extends Controller
 
     public function preCommit(Request $request)
     {
-        $transactionId = $request->input('transaction_id');
+        $rawId = $request->input('transaction_id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
         $roomId        = $request->input('room_id');
         $customerName  = $request->input('customer_name', '');
         $nodeIdentity  = rtrim(config('app.url'), '/') ?: gethostname();
@@ -50,15 +52,19 @@ class NodeController extends Controller
 
     public function doCommit(Request $request)
     {
-        $transactionId = $request->input('transaction_id');
-        DB::table('node_bookings')->where('transaction_id', $transactionId)->where('status', 'pending')
-            ->update(['status' => 'committed', 'updated_at' => now()]);
+        $rawId = $request->input('transaction_id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
+        DB::table('node_bookings')->updateOrInsert(
+            ['transaction_id' => $transactionId, 'node_port' => rtrim(config('app.url'), '/') ?: gethostname()],
+            ['status' => 'committed', 'updated_at' => now()]
+        );
         return response()->json(['status' => 'SUCCESS']);
     }
 
     public function abort(Request $request)
     {
-        $transactionId = $request->input('transaction_id');
+        $rawId = $request->input('transaction_id');
+        $transactionId = is_string($rawId) && str_starts_with($rawId, 'txn_') ? crc32($rawId) : (int)$rawId;
         $reason        = $request->input('reason', 'ABORTED');
         $roomId        = $request->input('room_id', '');
         $customerName  = $request->input('customer_name', '');
