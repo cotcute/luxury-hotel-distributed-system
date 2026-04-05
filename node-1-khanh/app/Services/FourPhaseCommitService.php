@@ -71,12 +71,10 @@ class FourPhaseCommitService
             Log::info("[4PC][Pha3] {$name} → {$vote}");
         }
 
-        // Node nào CHỦ ĐỘNG từ chối → ABORT ngay (phòng đã bị đặt)
+        // BỎ LUẬT CHẶT CHẼ TRƯỚC ĐÂY: Dù có node báo NO (phòng bị lock),
+        // nhưng nếu hệ thống VẪN ĐẠT ĐỦ QUORUM thì BỎ QUA node lỗi và chốt luôn.
         if (count($noNodes) > 0) {
-            $this->broadcastAbort($yesNodes, $txnId, $roomId, $customerName, 'ROOM_LOCKED');
-            throw new \Exception(
-                "[" . implode(', ', $noNodes) . "] báo phòng {$roomId} đã bị đặt! Giao dịch hủy."
-            );
+            Log::warning("[4PC] Các node sau từ chối nhưng sẽ bị bỏ qua nếu đủ Quorum: " . implode(', ', $noNodes));
         }
 
         // Kiểm tra Quorum: coordinator(YES) + remote YES >= quorum

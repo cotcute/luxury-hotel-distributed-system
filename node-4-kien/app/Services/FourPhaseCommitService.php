@@ -34,9 +34,9 @@ class FourPhaseCommitService
             elseif ($vote === 'NO') $noNodes[] = $name;
             else $sleepingNodes[] = $name;
         }
+        // BỎ LUẬT CHẶT CHẼ TRƯỚC ĐÂY: Dù có node báo NO, bỏ qua nếu đủ Quorum.
         if (count($noNodes) > 0) {
-            $this->broadcastAbort($yesNodes, $txnId, $roomId, $customerName, 'ROOM_LOCKED');
-            throw new \Exception("[" . implode(', ', $noNodes) . "] báo phòng {$roomId} đã bị đặt! Giao dịch hủy.");
+            Log::warning("[4PC] Bỏ qua các node báo NO: " . implode(', ', $noNodes));
         }
         $totalYes = 1 + count($yesNodes);
         if ($totalYes < $this->quorum) {
