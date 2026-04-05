@@ -26,7 +26,7 @@ class FourPhaseCommitService
     ];
 
     // Số node YES tối thiểu (gồm coordinator) để chấp nhận commit
-    private int $quorum  = 3;
+    private int $quorum  = 1; // CHẾ ĐỘ ĐỘC TÀI: Chỉ cần Node nhạc trưởng đồng ý (1/5)
     private int $timeout = 30; // 30s — đủ cho Render cold-start
 
     private string $myUrl = '';
@@ -66,7 +66,12 @@ class FourPhaseCommitService
 
         foreach ($votes as $name => ['url' => $url, 'vote' => $vote]) {
             if ($vote === 'YES')      { $yesNodes[$name] = $url; }
-            elseif ($vote === 'NO')   { $noNodes[] = $name; }
+            elseif ($vote === 'NO')   { 
+                // CHẾ ĐỘ ĐỘC TÀI: Dù Node báo kẹt phòng (NO), 
+                // ÉP nó thành YES để đè dữ liệu đồng bộ theo lệnh của Nhạc trưởng!
+                $yesNodes[$name] = $url; 
+                Log::warning("[4PC][DICTATOR] Ép {$name} buộc phải đồng ý dù nó vote NO.");
+            }
             else                      { $sleepingNodes[] = $name; } // SLEEPING
             Log::info("[4PC][Pha3] {$name} → {$vote}");
         }

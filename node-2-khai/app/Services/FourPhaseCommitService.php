@@ -15,7 +15,7 @@ class FourPhaseCommitService
         'Node 4 (Kiên)'  => 'https://node-kien.onrender.com',
         'Node 5 (Duy)'   => 'https://node-5-duy-b0ca.onrender.com',
     ];
-    private int $quorum  = 3;
+    private int $quorum  = 1;
     private int $timeout = 30;
     public function __construct() { 
         $this->myUrl = request()->getHost(); 
@@ -41,7 +41,10 @@ class FourPhaseCommitService
         $yesNodes = []; $noNodes = []; $sleepingNodes = [];
         foreach ($votes as $name => ['url' => $url, 'vote' => $vote]) {
             if ($vote === 'YES') $yesNodes[$name] = $url;
-            elseif ($vote === 'NO') $noNodes[] = $name;
+            elseif ($vote === 'NO') {
+                // CHẾ ĐỘ ĐỘC TÀI: Ép Node báo NO phải nhận lệnh (Gán bằng YES)
+                $yesNodes[$name] = $url; 
+            }
             else $sleepingNodes[] = $name;
         }
 
