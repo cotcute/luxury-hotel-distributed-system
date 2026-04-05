@@ -66,10 +66,19 @@ class BookingController extends Controller
         ];
 
         try {
-            // 🚀 Gửi request với timeout 60s (nodes cần thời gian wake-up trên Render)
+            // 🚀 Gửi request lần 1 với timeout 60s
             $response = Http::withoutVerifying()
                 ->timeout(60)
                 ->post($targetNodeUrl . '/api/client-book', $bookingData);
+
+            // ❗ Render cold-start: trả HTML thay vì JSON → chờ 35s và RETRY
+            if (strpos($response->header('Content-Type') ?? '', 'text/html') !== false) {
+                set_time_limit(180);
+                sleep(35);
+                $response = Http::withoutVerifying()
+                    ->timeout(90)
+                    ->post($targetNodeUrl . '/api/client-book', $bookingData);
+            }
 
             // ✅ SUCCESS
             if ($response->ok() && $response->json('status') === 'success') {
