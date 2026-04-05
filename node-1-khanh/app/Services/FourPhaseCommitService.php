@@ -1,136 +1,119 @@
 <?php
 
-namespace App\Services;
+namespace App\Http\Controllers;
 
-use Illuminate\Support\Facades\Http;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
-class FourPhaseCommitService
+class NodeController extends Controller
 {
-    protected $allNodes;
-
-    public function __construct()
+    // Giao tiếp với CLIENT: Đứng ra làm Nhạc trưởng
+    public function receiveFromClient(Request $request)
     {
-        $this->allNodes = [
-            'https://node-1-khanh.onrender.com' => 'Máy 1 (Khánh)',
-            'https://node-2-khai-80yz.onrender.com' => 'Máy 2 (Khải)',
-            'https://node-3-ngocc.onrender.com' => 'Máy 3 (Ngọc)',
-            'https://node-kien.onrender.com' => 'Máy 4 (Kiên)',
-            'https://node-5-duy-b0ca.onrender.com' => 'Máy 5 (Duy)'
-        ];
+        $service = new \App\Services\FourPhaseCommitService();
+        try {
+            $result = $service->executeTransaction($request->all());
+            return response()->json($result);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error', 
+                'message' => $e->getMessage()
+            ], 400); 
+        }
     }
 
-    public function executeTransaction(array $bookingData): array
+    // LẤY DANH TÍNH CỦA MÁY (Tránh giẫm đạp DB chung)
+    private function getNodeIdentity(Request $request) {
+        return $request->getHost() ?? 'Unknown_Node';
+    }
+
+    // PHA 1: Voting (Kiểm tra phòng)
+    public function canCommit(Request $request)
     {
-        $transactionId = $bookingData['id'];
-        $roomId = $bookingData['room_id'];
-        $customerName = $bookingData['name'];
-        $deadNodesList = [];
+        $transactionId = $request->input('id'); 
+        $roomId = $request->input('room_id');
+        
+        $isRoomLocked = DB::table('node_bookings')
+            ->where('room_id', $roomId)
+            ->where('transaction_id', '!=', $transactionId)
+            ->where('status', 'pending')
+            ->where('created_at', '>=', now()->subMinutes(2)) 
+            ->exists();
+        
+        if ($isRoomLocked) {
+            return response()->json(['status' => 'NO']);
+        }
+
+        return response()->json(['status' => 'YES']);
+    }
+
+    // PHA 2: Chuẩn bị (Reserve) - VŨ KHÍ CHỐNG CRASH TẠI ĐÂY
+    public function preCommit(Request $request)
+    {
+        $transactionId = $request->input('transaction_id');
+        $roomId = $request->input('room_id');
+        $customerName = $request->input('customer_name');
+        $nodeIdentity = $this->getNodeIdentity($request);
 
         try {
-            // 🔹 PHA 1: PRE-CHECK
-            if (!$this->sendQuorumRequests('/api/can-commit', [
-                'id' => $transactionId,
-                'room_id' => $roomId
-            ], 'YES', $deadNodesList)) {
-
-                $this->abortTransaction($transactionId, "ABORTED", $roomId, $customerName);
-                throw new \Exception("Phòng đã bị chiếm trên Server khác!");
-            }
-
-            // 🔹 PHA 2: PRE-COMMIT (RESERVE)
-            if (!$this->sendQuorumRequests('/api/pre-commit', [
-                'transaction_id' => $transactionId,
-                'room_id' => $roomId,
-                'customer_name' => $customerName
-            ], 'ACK', $deadNodesList)) {
-
-                $this->abortTransaction($transactionId, "ABORTED", $roomId, $customerName);
-                throw new \Exception("Lỗi ở Pha 2: Reserve.");
-            }
-
-            // 🔹 PHA 3: (LOGIC QUORUM nằm trong sendQuorumRequests)
-
-            // 🔹 PHA 4: COMMIT
-            $this->sendQuorumRequests('/api/do-commit', [
-                'transaction_id' => $transactionId
-            ], 'SUCCESS', $deadNodesList);
-
-            return [
-                'status' => 'success',
-                'dead_nodes' => array_unique($deadNodesList)
-            ];
-
-        } catch (\Exception $e) {
-            throw $e;
-        }
-    }
-
-    public function abortTransaction($transactionId, $reason, $roomId, $customerName)
-    {
-        foreach ($this->allNodes as $nodeUrl => $nodeName) {
-            try {
-                Http::withoutVerifying()->timeout(3)->post($nodeUrl . '/api/abort', [
+            // DÙNG updateOrInsert: 5 máy cùng ập vào 1 DB cũng không bao giờ bị Crash SQL!
+            DB::table('node_bookings')->updateOrInsert(
+                [
                     'transaction_id' => $transactionId,
-                    'reason' => $reason,
-                    'room_id' => $roomId,
-                    'customer_name' => $customerName
-                ]);
-            } catch (\Exception $e) {
-                // bỏ qua lỗi
-            }
+                    'node_port'      => $nodeIdentity // Định danh riêng biệt từng máy
+                ],
+                [
+                    'room_id'        => $roomId,
+                    'customer_name'  => $customerName,
+                    'status'         => 'pending',
+                    'created_at'     => now(),
+                    'updated_at'     => now(),
+                ]
+            );
+            return response()->json(['status' => 'ACK']);
+        } catch (\Exception $e) {
+            return response()->json(['status' => 'FAILED', 'error' => $e->getMessage()]);
         }
     }
 
-    // 🚀 QUORUM VERSION (>= 3/5 là OK)
-    private function sendQuorumRequests($endpoint, $payload, $expectedStatus, &$deadNodesList): bool
+    // PHA 3: Chốt hạ (Commit)
+    public function doCommit(Request $request)
     {
-        $agreedCount = 0;
-        $hijackedError = false;
+        $transactionId = $request->input('transaction_id');
+        $nodeIdentity = $this->getNodeIdentity($request);
 
-        $totalNodes = count($this->allNodes); // 5 máy
-        $quorumRequired = ceil($totalNodes / 2); // 3 máy
+        $updated = DB::table('node_bookings')
+            ->where('transaction_id', $transactionId)
+            ->where('node_port', $nodeIdentity) // Chỉ Update dòng của chính mình
+            ->where('status', 'pending')
+            ->update(['status' => 'committed', 'updated_at' => now()]);
 
-        // ⚡ GỬI SONG SONG
-        $responses = Http::pool(function (\Illuminate\Http\Client\Pool $pool) use ($endpoint, $payload) {
-            foreach ($this->allNodes as $nodeUrl => $nodeName) {
-                $pool->as($nodeUrl)
-                    ->withoutVerifying()
-                    ->timeout(5)
-                    ->post($nodeUrl . $endpoint, $payload);
-            }
-        });
-
-        foreach ($responses as $nodeUrl => $response) {
-            $nodeName = $this->allNodes[$nodeUrl];
-
-            // ❌ NODE CHẾT / TIMEOUT / HTML
-            if ($response instanceof \Exception || !$response->ok() || $response->json('status') === null) {
-                $deadNodesList[] = $nodeName;
-                continue;
-            }
-
-            $status = $response->json('status');
-
-            // ❗ BỊ CƯỚP PHÒNG
-            if (strpos($endpoint, 'can-commit') !== false && $status === 'NO') {
-                $hijackedError = true;
-                continue;
-            }
-
-            // ✅ ĐỒNG Ý
-            if ($status === $expectedStatus) {
-                $agreedCount++;
-            } else {
-                $deadNodesList[] = $nodeName;
-            }
-        }
-
-        // ❗ Nếu có máy báo NO → fail ngay
-        if ($hijackedError) {
-            return false;
-        }
-
-        // 🔥 QUORUM LOGIC
-        return ($agreedCount >= $quorumRequired);
+        return response()->json(['status' => 'SUCCESS']);
     }
-}   
+
+    // PHA 4: Hủy bỏ (Abort)
+    public function abort(Request $request)
+    {
+        $transactionId = $request->input('transaction_id');
+        $reason = $request->input('reason', 'ABORTED');
+        $roomId = $request->input('room_id');
+        $customerName = $request->input('customer_name');
+        $nodeIdentity = $this->getNodeIdentity($request);
+
+        // Chống Crash khi dọn rác
+        DB::table('node_bookings')->updateOrInsert(
+            [
+                'transaction_id' => $transactionId,
+                'node_port'      => $nodeIdentity
+            ],
+            [
+                'room_id'        => $roomId,
+                'customer_name'  => $customerName,
+                'status'         => $reason,
+                'updated_at'     => now(),
+            ]
+        );
+
+        return response()->json(['status' => 'SUCCESS']);
+    }
+}
